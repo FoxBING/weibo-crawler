@@ -19,7 +19,7 @@ from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from time import sleep
-
+from urllib.parse import unquote
 import requests
 from requests.exceptions import RequestException
 from lxml import etree
@@ -136,7 +136,7 @@ class Weibo(object):
             'sec-fetch-mode': 'navigate',
             'sec-fetch-site': 'same-origin',
             'upgrade-insecure-requests': '1',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0',
+            'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
         }
         self.mysql_config = config.get("mysql_config")  # MySQL数据库连接配置，可以不填
         self.mongodb_URI = config.get("mongodb_URI")  # MongoDB数据库连接字符串，可以不填
@@ -640,20 +640,23 @@ class Weibo(object):
         video_url = ""
         if weibo_info.get("page_info"):
             if weibo_info["page_info"].get("type") == "video":
-                media_info = weibo_info["page_info"].get("urls") or weibo_info["page_info"].get("media_info")
+                media_info = weibo_info["page_info"].get("page_url") 
                 if media_info:
-                    video_url = (media_info.get("mp4_720p_mp4") or
-                                media_info.get("mp4_hd_url") or
-                                media_info.get("hevc_mp4_hd") or
-                                media_info.get("mp4_sd_url") or
-                                media_info.get("mp4_ld_mp4") or
-                                media_info.get("stream_url_hd") or
-                                media_info.get("stream_url"))
+                    match = re.search(r'fid=([^&]*)', media_info)
+                    if match:
+                        video_url = "https://video.weibo.com/show?fid=" + unquote(match.group(1))
+                    else:
+                        video_url = media_info
+                        print(f"无效w视频URL: {video_url}")
         return video_url
 
     def download_one_file(self, url, file_path, type, weibo_id):
         """下载单个文件(图片/视频)"""
         try:
+            # 验证URL是否有效，跳过不完整的URL
+            if not url.startswith(('http://', 'https://')):
+                logger.warning(f"跳过无效URL: {url}")
+                return
 
             file_exist = os.path.isfile(file_path)
             need_download = (not file_exist)
@@ -763,6 +766,80 @@ class Weibo(object):
                 error_entry = f"{weibo_id}:{file_path}:{url}:{original_url}\n"  # 修改
                 f.write(error_entry.encode(sys.stdout.encoding))
             logger.exception(e)
+ 
+    def yd_video_file(self, url, file_path, weibo_id):
+        """使用yt-dlp下载视频文件"""
+        try:
+            # 验证URL是否有效，跳过不完整的URL
+            if not url.startswith(('http://', 'https://')):
+                logger.warning(f"跳过无效URL: {url}")
+                return
+
+            # 检查文件是否已存在
+            file_exist = os.path.isfile(file_path + '.mp4') or os.path.isfile(file_path + '.mov') or os.path.isfile(file_path + '.webm')
+            need_download = (not file_exist)
+            sqlite_exist = False
+            if "sqlite" in self.write_mode:
+                sqlite_exist = self.sqlite_exist_file(file_path + '.mp4')
+
+            if not need_download:
+                return 
+
+            # 构建yt-dlp命令
+            ydl_opts = {
+                'outtmpl': file_path + '.%(ext)s',  # 输出文件名模板，扩展名由yt-dlp自动确定
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'noplaylist': True,
+                'writethumbnail': True,
+                'writeautomaticsub': False,
+                'ignoreerrors': True,
+                'ratelimit': None,
+                'retries': 3,
+                'fragment_retries': 3,
+                'skip_unavailable_fragments': True,
+                'keep_fragments': False,
+
+            }
+
+            import yt_dlp
+            
+            logger.info(f"开始下载视频: {url}")
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # 提取视频信息
+                info = ydl.extract_info(url, download=True)
+                
+                if info:
+                    # 获取实际下载的文件路径（包含扩展名）
+                    actual_file_path = ydl.prepare_filename(info)
+                    
+                    logger.info(f"视频下载完成: {actual_file_path}")
+                    
+                    # 如果启用了SQLite存储，保存文件信息
+                    if "sqlite" in self.write_mode and not sqlite_exist:
+                        self.insert_file_sqlite(
+                            file_path, weibo_id, url, None
+                    )
+                else:
+                    logger.warning(f"无法提取视频信息: {url}")
+                    
+        except ImportError:
+            logger.error("未安装yt-dlp库，请运行: pip install yt-dlp")
+            # 如果yt-dlp不可用，回退到原来的下载方式
+            self.download_one_file(url, file_path, "video", weibo_id)
+            
+        except Exception as e:
+            # 生成原始微博URL
+            original_url = f"https://m.weibo.cn/detail/{weibo_id}"  # 新增
+            error_file = self.get_filepath(type) + os.sep + "not_downloaded.txt"
+            with open(error_file, "ab") as f:
+                # 修改错误条目格式，添加原始URL
+                error_entry = f"{weibo_id}:{file_path}:{url}:{original_url}\n"  # 修改
+                f.write(error_entry.encode(sys.stdout.encoding))
+            logger.exception(e)
+      
 
     def sqlite_exist_file(self, url):
         if not os.path.exists(self.get_sqlte_path()):
@@ -807,6 +884,10 @@ class Weibo(object):
             if "," in urls:
                 url_list = urls.split(",")
                 for i, url in enumerate(url_list):
+                    # 跳过以https://zzx.sinaimg.cn开头的图片URL
+                    if url.startswith("https://zzx.sinaimg.cn"):
+                        logger.info(f"跳过下载zzx.sinaimg.cn图片: {url}")
+                        continue
                     index = url.rfind(".")
                     if len(url) - index >= 5:
                         file_suffix = ".jpg"
@@ -816,6 +897,10 @@ class Weibo(object):
                     file_path = file_dir + os.sep + file_name
                     self.download_one_file(url, file_path, file_type, w["id"])
             else:
+                # 跳过以https://zzx.sinaimg.cn开头的图片URL
+                if urls.startswith("https://zzx.sinaimg.cn"):
+                    logger.info(f"跳过下载zzx.sinaimg.cn图片: {urls}")
+                    return
                 index = urls.rfind(".")
                 if len(urls) - index > 5:
                     file_suffix = ".jpg"
@@ -824,7 +909,20 @@ class Weibo(object):
                 file_name = file_prefix + file_suffix
                 file_path = file_dir + os.sep + file_name
                 self.download_one_file(urls, file_path, file_type, w["id"])
-        elif file_type == "video" or file_type == "live_photo":
+        elif file_type == "video":
+            if ";" in urls:
+                url_list = urls.split(";")
+                for i, url in enumerate(url_list):
+                    file_name = file_prefix + "_" + str(i + 1)
+                    file_path = file_dir + os.sep + file_name
+                    self.yd_video_file(url, file_path, w["id"])
+            else:
+                file_name = file_prefix
+                file_path = file_dir + os.sep + file_name
+                self.yd_video_file(urls, file_path, w["id"])
+
+
+        elif file_type == "live_photo":
             file_suffix = ".mp4"
             if ";" in urls:
                 url_list = urls.split(";")
@@ -2337,10 +2435,10 @@ class Weibo(object):
                 self.weibo_to_sqlite(wrote_count)
             if self.original_pic_download:
                 self.download_files("img", "original", wrote_count)
-            if self.original_video_download:
-                self.download_files("video", "original", wrote_count)
             if self.original_live_photo_download:
                 self.download_files("live_photo", "original", wrote_count)
+            if self.original_video_download:
+                self.download_files("video", "original", wrote_count)
             # 下载转发微博文件（如果不禁爬转发）
             if not self.only_crawl_original:
                 if self.retweet_pic_download:
