@@ -2322,8 +2322,41 @@ class Weibo(object):
 
         if create == True:
             self.create_sqlite_table(connection=con)
+        else:
+            # 检查并更新表结构，添加缺失的字段
+            self.update_sqlite_table(connection=con)
 
         return con
+    
+    def update_sqlite_table(self, connection: sqlite3.Connection):
+        """更新SQLite表结构，添加缺失的字段"""
+        cur = connection.cursor()
+        
+        # 检查user表是否有ip_location字段
+        cur.execute("PRAGMA table_info(user)")
+        columns = [column[1] for column in cur.fetchall()]
+        
+        if "ip_location" not in columns:
+            # 添加ip_location字段
+            cur.execute("ALTER TABLE user ADD COLUMN ip_location varchar(32)")
+            connection.commit()
+            logger.info("已为user表添加ip_location字段")
+        
+        # 检查weibo表是否有edited和edit_count字段
+        cur.execute("PRAGMA table_info(weibo)")
+        weibo_columns = [column[1] for column in cur.fetchall()]
+        
+        if "edited" not in weibo_columns:
+            # 添加edited字段
+            cur.execute("ALTER TABLE weibo ADD COLUMN edited BOOLEAN DEFAULT 0")
+            connection.commit()
+            logger.info("已为weibo表添加edited字段")
+        
+        if "edit_count" not in weibo_columns:
+            # 添加edit_count字段
+            cur.execute("ALTER TABLE weibo ADD COLUMN edit_count INT DEFAULT 0")
+            connection.commit()
+            logger.info("已为weibo表添加edit_count字段")
 
     def create_sqlite_table(self, connection: sqlite3.Connection):
         sql = self.get_sqlite_create_sql()
@@ -2500,7 +2533,7 @@ class Weibo(object):
                     if is_end:
                         break
 
-                    if page % 20 == 0:  # 每爬20页写入一次文件
+                    if page % 10 == 0:  # 每爬10页写入一次文件
                         self.write_data(wrote_count)
                         wrote_count = self.got_count
 
