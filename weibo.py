@@ -778,72 +778,35 @@ class Weibo(object):
             logger.exception(e)
  
     def yd_video_file(self, url, file_path, weibo_id):
-        """使用yt-dlp下载视频文件"""
+        """将视频下载命令保存到文件，不立即执行"""
         try:
             # 验证URL是否有效，跳过不完整的URL
             if not url.startswith(('http://', 'https://')):
                 logger.warning(f"跳过无效URL: {url}")
                 return
 
-            # 检查文件是否已存在
-            file_exist = os.path.isfile(file_path + '.mp4') or os.path.isfile(file_path + '.mov') or os.path.isfile(file_path + '.webm')
-            need_download = (not file_exist)
-            sqlite_exist = False
-            if "sqlite" in self.write_mode:
-                sqlite_exist = self.sqlite_exist_file(file_path + '.mp4')
+            # 检查文件是否已存在（检查常见视频格式）
+            video_extensions = ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.flv']
+            file_exist = any(os.path.isfile(file_path + ext) for ext in video_extensions)
+            if file_exist:
+                logger.info(f"视频文件已存在，跳过下载: {file_path}")
+                return
 
-            if not need_download:
-                return 
+            # 构建完整的yt-dlp命令行命令
+            # 使用 %(ext)s 让yt-dlp自动添加正确的视频扩展名
+            yt_dlp_cmd = f'yt-dlp "{url}" --output "{file_path}.%(ext)s"'
 
-            # 构建yt-dlp命令
-            ydl_opts = {
-                'outtmpl': file_path + '.%(ext)s',  # 输出文件名模板，扩展名由yt-dlp自动确定
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-                'noplaylist': True,
-                'writethumbnail': True,
-                'writeautomaticsub': False,
-                'ignoreerrors': True,
-                'ratelimit': None,
-                'retries': 3,
-                'fragment_retries': 3,
-                'skip_unavailable_fragments': True,
-                'keep_fragments': False,
+            # 将命令保存到txt文件
+            cmd_file_path = os.path.join(self.get_filepath("video"), "yt-dlp_commands.txt")
+            with open(cmd_file_path, "a", encoding="utf-8") as f:
+                f.write(yt_dlp_cmd + "\n")
 
-            }
+            logger.info(f"已将视频下载命令保存到: {cmd_file_path}")
 
-            import yt_dlp
-            
-            logger.info(f"开始下载视频: {url}")
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # 提取视频信息
-                info = ydl.extract_info(url, download=True)
-                
-                if info:
-                    # 获取实际下载的文件路径（包含扩展名）
-                    actual_file_path = ydl.prepare_filename(info)
-                    
-                    logger.info(f"视频下载完成: {actual_file_path}")
-                    
-                    # 如果启用了SQLite存储，保存文件信息
-                    if "sqlite" in self.write_mode and not sqlite_exist:
-                        self.insert_file_sqlite(
-                            file_path, weibo_id, url, None
-                    )
-                else:
-                    logger.warning(f"无法提取视频信息: {url}")
-                    
-        except ImportError:
-            logger.error("未安装yt-dlp库，请运行: pip install yt-dlp")
-            # 如果yt-dlp不可用，回退到原来的下载方式
-            self.download_one_file(url, file_path, "video", weibo_id)
-            
         except Exception as e:
             # 生成原始微博URL
             original_url = f"https://m.weibo.cn/detail/{weibo_id}"  # 新增
-            error_file = self.get_filepath(type) + os.sep + "not_downloaded.txt"
+            error_file = self.get_filepath("video") + os.sep + "not_downloaded.txt"
             with open(error_file, "ab") as f:
                 # 修改错误条目格式，添加原始URL
                 error_entry = f"{weibo_id}:{file_path}:{url}:{original_url}\n"  # 修改
@@ -2597,6 +2560,58 @@ class Weibo(object):
         self.got_count = 0
         self.weibo_id_list = []
 
+    def execute_stored_video_downloads(self):
+        """执行所有暂存的视频下载命令"""
+        cmd_file_path = os.path.join(self.get_filepath("video"), "yt-dlp_commands.txt")
+        
+        if not os.path.exists(cmd_file_path):
+            logger.info("没有暂存的视频下载命令")
+            return
+        
+        try:
+            logger.info("开始执行所有暂存的视频下载命令...")
+            
+            import subprocess
+            import shlex
+            
+            with open(cmd_file_path, "r", encoding="utf-8") as f:
+                commands = f.readlines()
+            
+            # 创建一个新的命令文件，用于记录本次执行失败的命令
+            failed_cmd_file_path = os.path.join(self.get_filepath("video"), "failed_yt-dlp_commands.txt")
+            
+            for cmd in tqdm(commands, desc="Video Download Progress"):
+                cmd = cmd.strip()
+                if not cmd:
+                    continue
+                
+                try:
+                    logger.info(f"执行命令: {cmd}")
+                    # 使用shell=True执行复杂命令
+                    subprocess.run(cmd, shell=True, check=True)
+                    logger.info(f"命令执行成功: {cmd}")
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"命令执行失败: {cmd}")
+                    logger.error(f"错误信息: {e}")
+                    # 将失败的命令保存到失败命令文件
+                    with open(failed_cmd_file_path, "a", encoding="utf-8") as f:
+                        f.write(cmd + "\n")
+                except Exception as e:
+                    logger.error(f"执行命令时发生未知错误: {cmd}")
+                    logger.error(f"错误信息: {e}")
+                    # 将失败的命令保存到失败命令文件
+                    with open(failed_cmd_file_path, "a", encoding="utf-8") as f:
+                        f.write(cmd + "\n")
+            
+            logger.info("所有视频下载命令执行完成")
+            
+            # 如果有失败的命令，提示用户
+            if os.path.exists(failed_cmd_file_path) and os.path.getsize(failed_cmd_file_path) > 0:
+                logger.warning(f"部分视频下载失败，请查看: {failed_cmd_file_path}")
+            
+        except Exception as e:
+            logger.exception("执行视频下载命令时发生错误")
+    
     def start(self):
         """运行爬虫"""
         try:
@@ -2612,6 +2627,10 @@ class Weibo(object):
 
                 # 当前用户所有微博和评论抓取完毕后，再导出该用户的评论 CSV
                 self.export_comments_to_csv_for_current_user()
+
+                # 当前用户处理完后，立即执行该用户的视频下载命令
+                if self.original_video_download or (not self.only_crawl_original and self.retweet_video_download):
+                    self.execute_stored_video_downloads()
 
                 logger.info("信息抓取完毕")
                 logger.info("*" * 100)
