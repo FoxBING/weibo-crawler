@@ -292,7 +292,9 @@ pip install -r requirements.txt
     "post_config": {
         "api_url": "https://api.example.com",
         "api_token": ""
-    }
+    },
+    "write_time_in_exif": 1,
+    "change_file_time": 1
 }
 ```
 
@@ -387,7 +389,7 @@ remove_html_tag控制是否移除抓取到的weibo正文和评论中的html tag�
 write_mode控制结果文件格式，取值范围是csv、json、post、mongo、mysql和sqlite，分别代表将结果写入csv、json文件，通过POST发出，MongoDB、MySQL和SQLite数据库。write_mode可以同时包含这些取值中的一个或几个，如：
 
 ```
-"write_mode": ["csv", "json"],
+"write_mode": ["csv", "json", "markdown"],
 ```
 
 代表将结果信息写入csv文件和json文件。特别注意，如果你想写入数据库，除了在write_mode添加对应数据库的名字外，还应该安装相关数据库和对应python模块，具体操作见[设置数据库](#4设置数据库可选)部分。
@@ -532,6 +534,16 @@ post_config是write_mode为post时请求的配置，包括API URL和Token。如�
 
 start_page为爬取微博的初始页数，默认参数为1，即从所爬取用户的当前第一页微博内容开始爬取。
 若在大批量爬取微博时出现中途被限制中断的情况，可通过查看csv文件内目前已爬取到的微博数除以10，向下取整后的值即为中断页数，手动设置start_page参数为中断页数，重新运行即可从被中断的节点继续爬取剩余微博内容。
+
+**设置write_time_in_exif**
+
+write_time_in_exif控制是否启用将created_time写入图片exif信息中，包括jpg和jpeg文件，可取值为0和1，默认为1：
+
+```
+"write_time_in_exif": 1,
+```
+
+值为1，表示启用；值为0，表示不启用。
 
 ### 4.设置数据库（可选）
 
