@@ -2888,6 +2888,10 @@ class Weibo(object):
             if not pic_url:
                 continue
 
+            if pic_url.startswith("https://zzx.sinaimg.cn"):
+                logger.info(f"跳过下载zzx.sinaimg.cn图片: {pic_url}")
+                continue
+
             # 生成图片文件名：YYYY-MM-DD_HH-MM-SS.jpg
             # 如果同一条微博有多张图片，在文件名后加 _1, _2 等后缀
             base_filename = f"{date_str}_{time_str.replace(':', '-')}"
