@@ -69,6 +69,20 @@ class Weibo(object):
             logger.error("since_date 格式不正确，请确认配置是否正确")
             sys.exit()
         self.since_date = since_date  # 起始时间，即爬取发布日期从该值到现在的微博，形式为yyyy-mm-ddThh:mm:ss，如：2023-08-21T09:23:03
+        end_date = config.get("end_date", "")
+        # end_date 为空字符串时不限制截止时间
+        if end_date:
+            if isinstance(end_date, int):
+                end_date = date.today() - timedelta(end_date)
+                end_date = end_date.strftime(DTFORMAT)
+            elif self.is_date(end_date):
+                end_date = "{}T23:59:59".format(end_date)
+            elif self.is_datetime(end_date):
+                pass
+            else:
+                logger.error("end_date 格式不正确，请确认配置是否正确")
+                sys.exit()
+        self.end_date = end_date  # 截止时间，为空则不限制
         self.start_page = config.get("start_page", 1)  # 开始爬的页，如果中途被限制而结束可以用此定义开始页码
         self.write_mode = config[
             "write_mode"
@@ -202,6 +216,7 @@ class Weibo(object):
                 {
                     "user_id": user_id,
                     "since_date": self.since_date,
+                    "end_date": self.end_date,
                     "query_list": query_list,
                 }
                 for user_id in user_id_list
@@ -478,6 +493,13 @@ class Weibo(object):
         if (not isinstance(since_date, int)) and (not self.is_datetime(since_date)) and (not self.is_date(since_date)):
             logger.warning("since_date值应为yyyy-mm-dd形式、yyyy-mm-ddTHH:MM:SS形式或整数，请重新输入")
             sys.exit()
+
+        # 验证end_date
+        end_date = config.get("end_date", "")
+        if end_date:
+            if (not isinstance(end_date, int)) and (not self.is_datetime(end_date)) and (not self.is_date(end_date)):
+                logger.warning("end_date值应为yyyy-mm-dd形式、yyyy-mm-ddTHH:MM:SS形式或整数，请重新输入")
+                sys.exit()
 
         comment_max_count = config["comment_max_download_count"]
         if not isinstance(comment_max_count, int):
@@ -883,10 +905,20 @@ class Weibo(object):
         """获取微博原始图片url"""
         if weibo_info.get("pics"):
             pic_info = weibo_info["pics"]
-            pic_list = [
-                pic['large']['url'] for pic in pic_info
-                if isinstance(pic, dict) and pic.get('large')
-            ]
+            pic_list = []
+            for pic in pic_info:
+                if not isinstance(pic, dict) or not pic.get('large'):
+                    continue
+                # 跳过视频类型（多视频微博中视频以 type=video 存在 pics 中）
+                if pic.get('type') == 'video':
+                    continue
+                url = pic['large']['url']
+                # 将 URL 中的非原图尺寸标识替换为 large，确保获取原图
+                url = re.sub(
+                    r'/(mw\d+|bmiddle|thumb\d+|orj\d+|woriginal)/',
+                    '/large/', url
+                )
+                pic_list.append(url)
             pics = ",".join(pic_list)
         else:
             pics = ""
@@ -897,20 +929,34 @@ class Weibo(object):
         """获取Live Photo视频URL"""
         live_photo_list = weibo_info.get("live_photo", [])
         return ";".join(live_photo_list) if live_photo_list else ""
+
     def get_video_url(self, weibo_info):
         """获取微博普通视频URL"""
-        video_url = ""
-        if weibo_info.get("page_info"):
+        video_urls = []
+        # 1. 从 pics 中提取多视频（多视频微博中视频以 type=video 存在 pics 中，
+        #    视频URL在 videoSrc 字段）
+        if weibo_info.get("pics"):
+            for pic in weibo_info["pics"]:
+                if (isinstance(pic, dict) and pic.get("type") == "video"
+                        and pic.get("videoSrc")):
+                    video_urls.append(pic["videoSrc"])
+        # 2. 如果 pics 中没有视频，回退到 page_info（单视频兼容）
+        if not video_urls and weibo_info.get("page_info"):
             if weibo_info["page_info"].get("type") == "video":
-                media_info = weibo_info["page_info"].get("page_url") 
+                media_info = (weibo_info["page_info"].get("urls")
+                             or weibo_info["page_info"].get("media_info"))
                 if media_info:
-                    match = re.search(r'fid=([^&]*)', media_info)
-                    if match:
-                        video_url = "https://video.weibo.com/show?fid=" + unquote(match.group(1))
-                    else:
-                        video_url = media_info
-                        print(f"无效w视频URL: {video_url}")
-        return video_url
+                    url = (media_info.get("mp4_720p_mp4") or
+                           media_info.get("mp4_hd_mp4") or
+                           media_info.get("mp4_hd_url") or
+                           media_info.get("hevc_mp4_hd") or
+                           media_info.get("mp4_sd_url") or
+                           media_info.get("mp4_ld_mp4") or
+                           media_info.get("stream_url_hd") or
+                           media_info.get("stream_url"))
+                    if url:
+                        video_urls.append(url)
+        return ";".join(video_urls)
 
     def write_exif_time(self, file_path, time_str):
         if self.write_time_in_exif:
@@ -956,20 +1002,46 @@ class Weibo(object):
                 return 
 
             s = requests.Session()
-            s.mount('http://', HTTPAdapter(max_retries=5))
-            s.mount('https://', HTTPAdapter(max_retries=5))
+            s.mount('http://', HTTPAdapter(max_retries=2))
+            s.mount('https://', HTTPAdapter(max_retries=2))
             try_count = 0
             success = False
             MAX_TRY_COUNT = 3
             detected_extension = None
+            # 连续无数据超时时间（秒）：超过此时间没收到任何数据则判定为卡住
+            stall_timeout = 60
             while try_count < MAX_TRY_COUNT:
                 try:
+                    # 使用流式下载，避免大文件一次性加载导致卡住
                     response = s.get(
-                        url, headers=self.headers, timeout=(5, 10), verify=False
+                        url, headers=self.headers, timeout=(5, 30),
+                        verify=False, stream=True
                     )
                     response.raise_for_status()
-                    downloaded = response.content
+
+                    # 流式读取数据，带无数据超时控制
+                    # 只要持续收到数据就继续下载，仅在连续 stall_timeout 秒无数据时中断
+                    chunks = []
+                    last_data_time = time.time()
+                    for chunk in response.iter_content(chunk_size=1024 * 64):
+                        if chunk:
+                            chunks.append(chunk)
+                            last_data_time = time.time()  # 收到数据，重置计时
+                        # 检查是否长时间无数据
+                        if time.time() - last_data_time > stall_timeout:
+                            logger.warning(
+                                f"下载停滞({stall_timeout}s无数据)，跳过: {url[:80]}..."
+                            )
+                            raise RequestException(
+                                f"下载停滞：连续 {stall_timeout} 秒未收到数据"
+                            )
+                    downloaded = b''.join(chunks)
                     try_count += 1
+
+                    # 检查下载内容是否为空
+                    if not downloaded:
+                        logger.warning(f"下载内容为空: {url[:80]}... ({try_count}/{MAX_TRY_COUNT})")
+                        continue
 
                     # 获取文件后缀
                     url_path = url.split('?')[0]  # 去除URL中的参数
@@ -1193,6 +1265,9 @@ class Weibo(object):
                     file_name = file_prefix + "_" + str(i + 1) + file_suffix
                     file_path = file_dir + os.sep + file_name
                     self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
+                    # 视频下载间隔延迟，减少触发CDN限流
+                    if i < len(url_list) - 1:
+                        sleep(random.uniform(1, 3))
             else:
                 if urls.endswith(".mov"):
                     file_suffix = ".mov"
@@ -1785,6 +1860,19 @@ class Weibo(object):
                             since_date = datetime.strptime(
                                 self.user_config["since_date"], DTFORMAT
                             )
+                            # end_date 过滤：微博按从新到旧排列，晚于截止时间的跳过继续
+                            if self.user_config.get("end_date"):
+                                end_date = datetime.strptime(
+                                    self.user_config["end_date"], DTFORMAT
+                                )
+                                if created_at > end_date:
+                                    # 检查是否为置顶微博
+                                    is_pinned = w.get("mblog", {}).get("mblogtype", 0) == 2
+                                    if is_pinned:
+                                        logger.debug(f"[置顶微博] 微博ID={wb['id']}, 发布时间={created_at}, 是置顶微博，跳过但继续检查后续微博")
+                                    else:
+                                        logger.debug(f"[截止日期过滤] 微博ID={wb['id']}, 发布时间={created_at}, 截止时间={end_date}, 已跳过")
+                                    continue
                             if const.MODE == "append":
                                 # append模式：增量获取微博
                                 if self.first_crawler:
@@ -1829,7 +1917,7 @@ class Weibo(object):
                                     logger.debug(f"[置顶微博] 微博ID={wb['id']}, 发布时间={created_at}, 是置顶微博，跳过但继续检查后续微博")
                                     continue
                                 
-                                logger.debug(f"[日期过滤] 微博ID={wb['id']}, 发布时间={created_at}, 起始时间={since_date}, 被跳过")
+                                logger.debug(f"[日期过滤] 微博ID={wb['id']}, 发布时间={created_at}, 起始时间={since_date}, 已跳过")
                                 # 如果要检查还没有检查cookie，不能直接跳出
                                 if const.CHECK_COOKIE["CHECK"] and (
                                     not const.CHECK_COOKIE["CHECKED"]
@@ -3212,6 +3300,8 @@ class Weibo(object):
                     else:
                         user_config["since_date"] = self.since_date
                         logger.info(f"用户 {user_config['user_id']} 使用配置文件的起始时间: {user_config['since_date']}")
+                    # end_date 统一使用全局配置
+                    user_config["end_date"] = self.end_date
                     # 若超过3个字段，则第四个字段为 query_list                    
                     if len(info) > 3:
                         user_config["query_list"] = info[3].split(",")
