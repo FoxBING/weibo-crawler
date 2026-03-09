@@ -943,19 +943,27 @@ class Weibo(object):
         # 2. 如果 pics 中没有视频，回退到 page_info（单视频兼容）
         if not video_urls and weibo_info.get("page_info"):
             if weibo_info["page_info"].get("type") == "video":
-                media_info = (weibo_info["page_info"].get("urls")
-                             or weibo_info["page_info"].get("media_info"))
-                if media_info:
-                    url = (media_info.get("mp4_720p_mp4") or
-                           media_info.get("mp4_hd_mp4") or
-                           media_info.get("mp4_hd_url") or
-                           media_info.get("hevc_mp4_hd") or
-                           media_info.get("mp4_sd_url") or
-                           media_info.get("mp4_ld_mp4") or
-                           media_info.get("stream_url_hd") or
-                           media_info.get("stream_url"))
-                    if url:
-                        video_urls.append(url)
+                # 优先使用 page_url（video.weibo.com/show?fid=xxx 格式），便于 yt-dlp 下载
+                page_url = weibo_info["page_info"].get("page_url")
+                if page_url:
+                    match = re.search(r'fid=([^&]*)', page_url)
+                    if match:
+                        video_urls.append(f"https://video.weibo.com/show?fid={unquote(match.group(1))}")
+                # 回退到 media_info 中的直接下载地址
+                if not video_urls:
+                    media_info = (weibo_info["page_info"].get("urls")
+                                 or weibo_info["page_info"].get("media_info"))
+                    if media_info:
+                        url = (media_info.get("mp4_720p_mp4") or
+                               media_info.get("mp4_hd_mp4") or
+                               media_info.get("mp4_hd_url") or
+                               media_info.get("hevc_mp4_hd") or
+                               media_info.get("mp4_sd_url") or
+                               media_info.get("mp4_ld_mp4") or
+                               media_info.get("stream_url_hd") or
+                               media_info.get("stream_url"))
+                        if url:
+                            video_urls.append(url)
         return ";".join(video_urls)
 
     def write_exif_time(self, file_path, time_str):
@@ -2959,7 +2967,7 @@ class Weibo(object):
                         self._download_weibo_images(retweet, img_dir, is_retweet=True)
 
     def _download_weibo_images(self, weibo, img_dir, is_retweet=False):
-        """下载单条微博的图片"""
+        """下载单条微博的图片和Live Photo"""
         created_at = weibo.get("created_at", "")
         if not created_at:
             return
@@ -2980,8 +2988,6 @@ class Weibo(object):
                 logger.info(f"跳过下载zzx.sinaimg.cn图片: {pic_url}")
                 continue
 
-            # 生成图片文件名：YYYY-MM-DD_HH-MM-SS.jpg
-            # 如果同一条微博有多张图片，在文件名后加 _1, _2 等后缀
             base_filename = f"{date_str}_{time_str.replace(':', '-')}"
             if len(pics) > 1:
                 img_filename = f"{base_filename}_{i+1}.jpg"
@@ -2990,8 +2996,23 @@ class Weibo(object):
 
             img_path = os.path.join(img_dir, img_filename)
 
-            # 下载图片
             self.download_one_file(pic_url, img_path, "img", weibo["id"], created_at)
+
+        if weibo.get("live_photo_url"):
+            live_photo_urls = weibo["live_photo_url"].split(";")
+            live_photo_count = len([url for url in live_photo_urls if url])
+            for i, live_url in enumerate(live_photo_urls):
+                if not live_url:
+                    continue
+
+                base_filename = f"{date_str}_{time_str.replace(':', '-')}"
+                if live_photo_count > 1:
+                    live_filename = f"{base_filename}_{i+1}.mov" if live_url.endswith(".mov") else f"{base_filename}_{i+1}.mp4"
+                else:
+                    live_filename = f"{base_filename}.mov" if live_url.endswith(".mov") else f"{base_filename}.mp4"
+
+                live_path = os.path.join(img_dir, live_filename)
+                self.download_one_file(live_url, live_path, "live_photo", weibo["id"], created_at)
 
     def generate_markdown_file(self, group_key, weibo_list):
         """生成单个markdown文件（增量模式）"""
@@ -3163,11 +3184,9 @@ class Weibo(object):
             if "markdown" in self.write_mode:
                 self.write_markdown(wrote_count)
 
-            # 图片下载逻辑：如果使用markdown模式，图片已在write_markdown中下载
-            # 否则按原有逻辑下载
             if self.original_pic_download and "markdown" not in self.write_mode:
                 self.download_files("img", "original", wrote_count)
-            if self.original_live_photo_download:
+            if self.original_live_photo_download and "markdown" not in self.write_mode:
                 self.download_files("live_photo", "original", wrote_count)
             if self.original_video_download:
                 self.download_files("video", "original", wrote_count)
@@ -3177,7 +3196,7 @@ class Weibo(object):
                     self.download_files("img", "retweet", wrote_count)
                 if self.retweet_video_download:
                     self.download_files("video", "retweet", wrote_count)
-                if self.retweet_live_photo_download:
+                if self.retweet_live_photo_download and "markdown" not in self.write_mode:
                     self.download_files("live_photo", "retweet", wrote_count)
 
     def get_pages(self):
