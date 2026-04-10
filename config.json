@@ -19,16 +19,17 @@
     "retweet_live_photo_download": 0, // 是否下载转发微博Live Photo 0 = 不下载，1 = 下载
     "download_comment": 0, // 是否下载评论 0 = 不下载，1 = 下载
     "comment_max_download_count": 100, // 单条微博最大评论下载数量， 仅当 download_comment = 1 时生效
+    "comment_pic_download": 0, // 是否下载评论图片 0 = 不下载，1 = 下载
     "download_repost": 0, // 是否下载转发 0 = 不下载，1 = 下载
     "repost_max_download_count": 100, // 单条微博最大转发下载数量， 仅当 download_repost = 1 时生效
     "output_directory": "weibo_data", // 数据输出目录
     "user_id_as_folder_name": 0, // 是否以用户ID作为子文件夹名称 0 = 否，1 = 是
     "remove_html_tag": 1, // 是否移除微博内容中的HTML标签 0 = 否，1 = 是
-    "cookie": "_T_WM=8f7092df0c4957e6da77f19d9641af07; SCF=AkV9S8VcF0XVodb6ARCeZk7pR82ft6oEkWSI3hYBm_3waPk270K5lGft-v-WOMIAq30ph3R0hvaq2lzPaQOLT3c.; SUB=_2A25Ex_-iDeRhGeFH7FIU9CbMzTSIHXVnvX1qrDV6PUJbktANLRPtkW1NeoY36Gu9KVHT9oi6nqaDxQbj21-TBuOt; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9WWpnyeAsUdO9RrliInxArBQ5JpX5KMhUgL.FoM4S05fShn7Son2dJLoI74s9gpDwFH81C-4BE-4B7tt; SSOLoginState=1774424050; ALF=1777016050",
+    "cookie": "SCF=AkV9S8VcF0XVodb6ARCeZk7pR82ft6oEkWSI3hYBm_3wQkGSmrY9V5vFqaUVD_YhMUyWON9QX7vu_ExagpIGeT0.; SUB=_2A25E0dXxDeRhGeFH7FIU9CbMzTSIHXVnr1c5rDV6PUJbktANLVL2kW1NeoY36JDmopJ__QIhcBSdbzRC9dDJ44ro; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9WWpnyeAsUdO9RrliInxArBQ5JpX5KMhUgL.FoM4S05fShn7Son2dJLoI74s9gpDwFH81C-4BE-4B7tt; SSOLoginState=1775609249; ALF=1778201249; _T_WM=8ee09677c6ffa0a1286f23fc52d63fbd",
     // 微博Cookie（重要！）
     // 登录微博后，在浏览器开发者工具中获取
     // 格式：SCF=...; SUB=...; SUBP=...; ALF=...; SSOLoginState=...
-    "sqlite_db_path": "weibo_data/weibo_data.sqlite", // SQLite数据库文件路径，仅当 write_mode 包含 sqlite 时生效
+    "sqlite_db_path": "weibodata.db", // SQLite数据库文件路径，仅当 write_mode 包含 sqlite 时生效
     "mysql_config": {
         "host": "localhost",
         "port": 3306,
