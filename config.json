@@ -25,7 +25,7 @@
     "output_directory": "weibo_data", // 数据输出目录
     "user_id_as_folder_name": 0, // 是否以用户ID作为子文件夹名称 0 = 否，1 = 是
     "remove_html_tag": 1, // 是否移除微博内容中的HTML标签 0 = 否，1 = 是
-    "cookie": "SCF=AkV9S8VcF0XVodb6ARCeZk7pR82ft6oEkWSI3hYBm_3wQkGSmrY9V5vFqaUVD_YhMUyWON9QX7vu_ExagpIGeT0.; SUB=_2A25E0dXxDeRhGeFH7FIU9CbMzTSIHXVnr1c5rDV6PUJbktANLVL2kW1NeoY36JDmopJ__QIhcBSdbzRC9dDJ44ro; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9WWpnyeAsUdO9RrliInxArBQ5JpX5KMhUgL.FoM4S05fShn7Son2dJLoI74s9gpDwFH81C-4BE-4B7tt; SSOLoginState=1775609249; ALF=1778201249; _T_WM=8ee09677c6ffa0a1286f23fc52d63fbd",
+    "cookie": "_T_WM=8ee09677c6ffa0a1286f23fc52d63fbd; SCF=AkV9S8VcF0XVodb6ARCeZk7pR82ft6oEkWSI3hYBm_3wPmCxHQkdkZJ9flI6t1Nl-Oi9HJQdLDW39_LvibuGtFA.; SUB=_2A25E_6lFDeRhGeFH7FIU9CbMzTSIHXVkdKSNrDV6PUJbktANLU2ikW1NeoY36G8IQZQVu-XukPpJYmaH3ExPFFr7; SUBP=0033WrSXqPxfM725Ws9jqgMF55529P9D9WWpnyeAsUdO9RrliInxArBQ5JpX5KMhUgL.FoM4S05fShn7Son2dJLoI74s9gpDwFH81C-4BE-4B7tt; SSOLoginState=1778112789; ALF=1780704789",
     // 微博Cookie（重要！）
     // 登录微博后，在浏览器开发者工具中获取
     // 格式：SCF=...; SUB=...; SUBP=...; ALF=...; SSOLoginState=...
