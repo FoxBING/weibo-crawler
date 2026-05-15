@@ -1158,6 +1158,9 @@ class Weibo(object):
                             logger.debug(f"[DEBUG] PNG 文件不完整: {url} ({try_count}/{MAX_TRY_COUNT})")
                             continue  # 文件不完整，继续重试
                         detected_extension = '.png'
+                    elif downloaded[:4] == b'ftyp':
+                        # MP4/MOV 视频文件
+                        detected_extension = '.mp4'
                     else:
                         # 其他类型，使用原有逻辑处理
                         if inferred_extension in ['mp4', 'mov', 'webm', 'gif', 'bmp', 'tiff']:
@@ -1349,6 +1352,7 @@ class Weibo(object):
                     if url.startswith("https://video.weibo.com/show"):
                         self.yd_video_file(url, file_path, w["id"])
                     else:
+                        file_path = file_path + ".mp4"
                         self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
             else:
                 file_name = file_prefix
@@ -1356,6 +1360,7 @@ class Weibo(object):
                 if urls.startswith("https://video.weibo.com/show"):
                     self.yd_video_file(urls, file_path, w["id"])
                 else:
+                    file_path = file_path + ".mp4"
                     self.download_one_file(urls, file_path, file_type, w["id"], w["created_at"])
 
 
