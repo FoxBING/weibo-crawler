@@ -1334,11 +1334,17 @@ class Weibo(object):
                 for i, url in enumerate(url_list):
                     file_name = file_prefix + "_" + str(i + 1)
                     file_path = file_dir + os.sep + file_name
-                    self.yd_video_file(url, file_path, w["id"])
+                    if url.startswith("https://video.weibo.com/show"):
+                        self.yd_video_file(url, file_path, w["id"])
+                    else:
+                        self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
             else:
                 file_name = file_prefix
                 file_path = file_dir + os.sep + file_name
-                self.yd_video_file(urls, file_path, w["id"])
+                if urls.startswith("https://video.weibo.com/show"):
+                    self.yd_video_file(urls, file_path, w["id"])
+                else:
+                    self.download_one_file(urls, file_path, file_type, w["id"], w["created_at"])
 
 
         elif file_type == "live_photo":
