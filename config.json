@@ -11,9 +11,9 @@
         "json"
     ], // 输出格式（可多选），可选项：csv, json, mysql, mongo, sqlite, post, markdown，示例：["markdown"] 或 ["markdown", "csv", "json"]
     "markdown_split_by": "year", // markdown文件分割方式，可选项：day（按天，平铺），day_by_month（按天，按月归档到子文件夹），month（按月），year（按年），all（所有数据在一个文件）
-    "original_pic_download": 0, // 是否下载原创微博图片 0 = 不下载，1 = 下载
+    "original_pic_download": 1, // 是否下载原创微博图片 0 = 不下载，1 = 下载
     "retweet_pic_download": 0, // 是否下载转发微博图片 0 = 不下载，1 = 下载
-    "original_video_download": 0, // 是否下载原创微博视频 0 = 不下载，1 = 下载
+    "original_video_download": 1, // 是否下载原创微博视频 0 = 不下载，1 = 下载
     "retweet_video_download": 0, // 是否下载转发微博视频 0 = 不下载，1 = 下载
     "original_live_photo_download": 1, // 是否下载原创微博Live Photo 0 = 不下载，1 = 下载
     "retweet_live_photo_download": 0, // 是否下载转发微博Live Photo 0 = 不下载，1 = 下载
@@ -25,7 +25,7 @@
     "output_directory": "weibo_data", // 数据输出目录
     "user_id_as_folder_name": 0, // 是否以用户ID作为子文件夹名称 0 = 否，1 = 是
     "remove_html_tag": 1, // 是否移除微博内容中的HTML标签 0 = 否，1 = 是
-    "cookie": "YOUR_WEIBO_COOKIE_HERE",
+    "cookie": "cookie.txt",
     // 微博Cookie（重要！）
     // 登录微博后，在浏览器开发者工具中获取
     // 格式：SCF=...; SUB=...; SUBP=...; ALF=...; SSOLoginState=...
