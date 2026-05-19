@@ -3666,7 +3666,12 @@ class Weibo(object):
                         f.write(cmd + "\n")
             
             logger.info("所有视频下载命令执行完成")
-            
+
+            # 删除命令文件
+            if os.path.exists(cmd_file_path):
+                os.remove(cmd_file_path)
+                logger.info(f"已删除命令文件: {cmd_file_path}")
+
             # 如果有失败的命令，提示用户
             if os.path.exists(failed_cmd_file_path) and os.path.getsize(failed_cmd_file_path) > 0:
                 logger.warning(f"部分视频下载失败，请查看: {failed_cmd_file_path}")
