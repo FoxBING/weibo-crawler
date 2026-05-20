@@ -34,6 +34,10 @@ def build_new_name(date_str, text, weibo_id, index, ext):
     return base + ext
 
 
+def heading_to_prefix(heading_time):
+    return heading_time.replace(" ", "_").replace(":", "-")
+
+
 def parse_md_sections(md_path):
     with open(md_path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -48,7 +52,8 @@ def parse_md_sections(md_path):
         weibo_id = m.group(2).strip()
         body = m.group(3).strip()
 
-        date_str = heading_time[:10] if len(heading_time) >= 10 else heading_time
+        date_str = heading_time[:10]
+        file_prefix = heading_to_prefix(heading_time)
 
         text_lines = []
         for line in body.splitlines():
@@ -66,125 +71,85 @@ def parse_md_sections(md_path):
                 text_lines.append(line)
         text = ' '.join(text_lines)
 
-        sections.append(
-            {
-                "weibo_id": weibo_id,
-                "date_str": date_str,
-                "text": text,
-                "body": body,
-            }
-        )
+        sections.append({
+            "weibo_id": weibo_id,
+            "date_str": date_str,
+            "file_prefix": file_prefix,
+            "text": text,
+        })
 
     return sections, content
 
 
-def scan_disk_files(user_dir):
-    file_index = []
+def build_disk_index(user_dir):
+    index = {}
     for root, dirs, files in os.walk(user_dir):
         for f in files:
             if f.endswith(('.md', '.csv', '.json', '.txt', '.db')):
                 continue
             full_path = os.path.join(root, f)
             rel_dir = os.path.relpath(root, user_dir)
-            file_index.append({
-                "filename": f,
+            name_no_ext = os.path.splitext(f)[0]
+            ext = os.path.splitext(f)[1]
+            index[f] = {
                 "full_path": full_path,
                 "rel_dir": rel_dir,
-            })
-    return file_index
+                "filename": f,
+                "name_no_ext": name_no_ext,
+                "ext": ext,
+            }
+    return index
 
 
-def build_section_index(sections):
-    by_weibo_id = {}
-    by_date = {}
-    for section in sections:
-        weibo_id = section["weibo_id"]
-        date_str = section["date_str"]
-        date_compact = date_str.replace("-", "")
-        if weibo_id not in by_weibo_id:
-            by_weibo_id[weibo_id] = section
-        if date_str not in by_date:
-            by_date[date_str] = []
-        by_date[date_str].append(section)
-        if date_compact not in by_date:
-            by_date[date_compact] = []
-        if date_compact != date_str:
-            by_date[date_compact].append(section)
-    return by_weibo_id, by_date
+def find_files_for_section(disk_index, section):
+    file_prefix = section["file_prefix"]
+    weibo_id = section["weibo_id"]
 
+    matched = []
+    for filename, fi in disk_index.items():
+        if fi["name_no_ext"].startswith(file_prefix):
+            matched.append(fi)
+        elif weibo_id in fi["name_no_ext"]:
+            matched.append(fi)
 
-def match_file_to_section(fi, by_weibo_id, by_date):
-    filename = fi["filename"]
-    name_no_ext = os.path.splitext(filename)[0]
-
-    for weibo_id, section in by_weibo_id.items():
-        if weibo_id in name_no_ext:
-            return section
-
-    for date_key, section_list in by_date.items():
-        if date_key in filename or date_key in name_no_ext:
-            return section_list[0]
-
-    return None
-    if m:
-        return int(m.group(1))
-    return None
+    return matched
 
 
 def build_rename_plan(user_dir, sections):
-    disk_files = scan_disk_files(user_dir)
-    logger.info(f"  扫描到 {len(disk_files)} 个媒体文件")
+    disk_index = build_disk_index(user_dir)
+    logger.info(f"  扫描到 {len(disk_index)} 个媒体文件")
 
-    by_weibo_id, by_date = build_section_index(sections)
-
-    file_section_map = {}
-    for fi in disk_files:
-        section = match_file_to_section(fi, by_weibo_id, by_date)
-        if section:
-            file_section_map[id(fi)] = section
-
-    matched_files = [fi for fi in disk_files if id(fi) in file_section_map]
-    unmatched = len(disk_files) - len(matched_files)
-    if unmatched:
-        logger.info(f"  匹配: {len(matched_files)}, 未匹配: {unmatched}")
-
-    from collections import defaultdict
-    group_map = defaultdict(list)
-    for fi in matched_files:
-        section = file_section_map[id(fi)]
-        ext = os.path.splitext(fi["filename"])[1]
-        key = (section["weibo_id"], fi["rel_dir"], ext)
-        group_map[key].append(fi)
-
-    for key in group_map:
-        group_map[key].sort(key=lambda x: x["filename"])
-
+    used_files = set()
     plan = []
-    for fi in matched_files:
-        section = file_section_map[id(fi)]
+
+    for section in sections:
+        matched = find_files_for_section(disk_index, section)
+        matched = [fi for fi in matched if fi["filename"] not in used_files]
+
         weibo_id = section["weibo_id"]
         date_str = section["date_str"]
         text = section["text"]
-        old_name = fi["filename"]
-        ext = os.path.splitext(old_name)[1]
 
-        key = (weibo_id, fi["rel_dir"], ext)
-        group = group_map[key]
-        if len(group) > 1:
-            idx = group.index(fi) + 1
-        else:
-            idx = None
+        by_dir_ext = {}
+        for fi in matched:
+            key = (fi["rel_dir"], fi["ext"])
+            by_dir_ext.setdefault(key, []).append(fi)
 
-        new_name = build_new_name(date_str, text, weibo_id, idx, ext)
+        for (rel_dir, ext), group in by_dir_ext.items():
+            group.sort(key=lambda x: x["filename"])
+            for i, fi in enumerate(group):
+                idx = i + 1 if len(group) > 1 else None
+                new_name = build_new_name(date_str, text, weibo_id, idx, ext)
+                plan.append({
+                    "old_path": fi["full_path"],
+                    "old_name": fi["filename"],
+                    "new_name": new_name,
+                    "rel_dir": fi["rel_dir"],
+                    "weibo_id": weibo_id,
+                })
+                used_files.add(fi["filename"])
 
-        plan.append({
-            "old_path": fi["full_path"],
-            "old_name": old_name,
-            "new_name": new_name,
-            "rel_dir": fi["rel_dir"],
-            "weibo_id": weibo_id,
-        })
-
+    logger.info(f"  匹配: {len(plan)}, 未匹配: {len(disk_index) - len(used_files)}")
     return plan
 
 
