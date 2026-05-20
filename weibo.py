@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from time import sleep
 from urllib.parse import parse_qs, unquote, urlparse
+
 import requests
 from requests.exceptions import RequestException
 from lxml import etree
@@ -38,9 +39,6 @@ import piexif
 
 warnings.filterwarnings("ignore")
 
-
-
-# 初始化日志
 # 如果日志文件夹不存在，则创建
 if not os.path.isdir("log/"):
     os.makedirs("log/")
@@ -1368,30 +1366,21 @@ class Weibo(object):
 
         elif file_type == "live_photo":
             file_suffix = ".mp4"
-            try:
-                time_obj = datetime.strptime(w["created_at"], DTFORMAT)
-                date_str = time_obj.strftime("%Y-%m-%d")
-                time_str = time_obj.strftime("%H:%M:%S")
-                base_filename = f"{date_str}_{time_str.replace(':', '-')}"
-            except ValueError:
-                base_filename = file_prefix
             if ";" in urls:
                 url_list = urls.split(";")
                 for i, url in enumerate(url_list):
                     if url.endswith(".mov"):
                         file_suffix = ".mov"
-                    if len(url_list) > 1:
-                        file_name = f"{base_filename}_{i+1}{file_suffix}"
-                    else:
-                        file_name = f"{base_filename}{file_suffix}"
+                    file_name = file_prefix + "_" + str(i + 1) + file_suffix
                     file_path = file_dir + os.sep + file_name
                     self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
+                    # 视频下载间隔延迟，减少触发CDN限流
                     if i < len(url_list) - 1:
                         sleep(random.uniform(1, 3))
             else:
                 if urls.endswith(".mov"):
                     file_suffix = ".mov"
-                file_name = f"{base_filename}{file_suffix}"
+                file_name = file_prefix + file_suffix
                 file_path = file_dir + os.sep + file_name
                 self.download_one_file(urls, file_path, file_type, w["id"], w["created_at"])
 
@@ -1424,23 +1413,10 @@ class Weibo(object):
                 if not url:
                     continue
                 file_suffix = ".mov" if url.endswith(".mov") else ".mp4"
-                if file_type == "live_photo":
-                    try:
-                        time_obj = datetime.strptime(w["created_at"], DTFORMAT)
-                        date_str = time_obj.strftime("%Y-%m-%d")
-                        time_str = time_obj.strftime("%H:%M:%S")
-                        base_filename = f"{date_str}_{time_str.replace(':', '-')}"
-                    except ValueError:
-                        base_filename = file_prefix
-                    if len(url_list) > 1:
-                        file_name = f"{base_filename}_{i+1}{file_suffix}"
-                    else:
-                        file_name = f"{base_filename}{file_suffix}"
+                if len(url_list) > 1:
+                    file_name = file_prefix + "_" + str(i + 1) + file_suffix
                 else:
-                    if len(url_list) > 1:
-                        file_name = file_prefix + "_" + str(i + 1) + file_suffix
-                    else:
-                        file_name = file_prefix + file_suffix
+                    file_name = file_prefix + file_suffix
                 file_names.append(file_name)
 
         return file_names
@@ -3151,6 +3127,8 @@ class Weibo(object):
             if not pic_url:
                 continue
 
+            # 生成图片文件名：YYYY-MM-DD_HH-MM-SS.jpg
+            # 如果同一条微博有多张图片，在文件名后加 _1, _2 等后缀
             if pic_url.startswith("https://zzx.sinaimg.cn"):
                 logger.info(f"跳过下载zzx.sinaimg.cn图片: {pic_url}")
                 continue
@@ -3163,23 +3141,8 @@ class Weibo(object):
 
             img_path = os.path.join(img_dir, img_filename)
 
+            # 下载图片
             self.download_one_file(pic_url, img_path, "img", weibo["id"], created_at)
-
-            if weibo.get("live_photo_url"):
-                live_photo_urls = weibo["live_photo_url"].split(";")
-                live_photo_count = len([url for url in live_photo_urls if url])
-                for i, live_url in enumerate(live_photo_urls):
-                    if not live_url:
-                        continue
-
-                    base_filename = f"{date_str}_{time_str.replace(':', '-')}"
-                    if live_photo_count > 1:
-                        live_filename = f"{base_filename}_{i+1}.mov" if live_url.endswith(".mov") else f"{base_filename}_{i+1}.mp4"
-                    else:
-                        live_filename = f"{base_filename}.mov" if live_url.endswith(".mov") else f"{base_filename}.mp4"
-
-                    live_path = os.path.join(img_dir, live_filename)
-                    self.download_one_file(live_url, live_path, "live_photo", weibo["id"], created_at)
 
     def get_markdown_image_filenames(self, weibo, fallback_created_at=""):
         """根据微博时间和图片数量生成 Markdown 中使用的本地图片文件名"""
@@ -3467,21 +3430,22 @@ class Weibo(object):
             if "markdown" in self.write_mode:
                 self.write_markdown(wrote_count)
 
+            # 图片下载逻辑：如果使用markdown模式，图片已在write_markdown中下载
+            # 否则按原有逻辑下载
             if self.original_pic_download and "markdown" not in self.write_mode:
                 self.download_files("img", "original", wrote_count)
-            # live_photo 通过 _download_weibo_images 下载到 img 文件夹，不再单独下载
-            # if self.original_live_photo_download:
-            #     self.download_files("live_photo", "original", wrote_count)
             if self.original_video_download:
                 self.download_files("video", "original", wrote_count)
+            if self.original_live_photo_download:
+                self.download_files("live_photo", "original", wrote_count)
             # 下载转发微博文件（如果不禁爬转发）
             if not self.only_crawl_original:
                 if self.retweet_pic_download and "markdown" not in self.write_mode:
                     self.download_files("img", "retweet", wrote_count)
                 if self.retweet_video_download:
                     self.download_files("video", "retweet", wrote_count)
-                # if self.retweet_live_photo_download:
-                #     self.download_files("live_photo", "retweet", wrote_count)
+                if self.retweet_live_photo_download:
+                    self.download_files("live_photo", "retweet", wrote_count)
 
     def get_pages(self):
         """获取全部微博"""

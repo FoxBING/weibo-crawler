@@ -373,8 +373,8 @@ $RECYCLE.BIN/
 *.txt
 # End of https://www.toptal.com/developers/gitignore/api/python,jetbrains,visualstudiocode,windows,macos,linux
 
-
-weibo_data
+test/
+weibo_data/
 
 
 
