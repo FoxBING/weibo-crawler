@@ -374,21 +374,7 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/python,jetbrains,visualstudiocode,windows,macos,linux
 
 
-js.json
-user_id_list.txt
-execute_yt-dlp_commands.ps1
-run.ps1
-test.py
-update.ps1
-video_readme.md
-video.py
-weibo_data/users.csv
-1.txt
-新建 文本文档 (2).txt
 weibo_data
-2.txt
-config.json
-user_id_list1.txt
-download_single_video.py
-user_id_list2.txt
-user_id_list3.txt
+
+
+

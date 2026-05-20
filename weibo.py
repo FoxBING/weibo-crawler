@@ -21,7 +21,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from time import sleep
 from urllib.parse import parse_qs, unquote, urlparse
-from dotenv import load_dotenv
 import requests
 from requests.exceptions import RequestException
 from lxml import etree
@@ -38,7 +37,7 @@ from util.llm_analyzer import LLMAnalyzer  # 导入 LLM 分析器
 import piexif
 
 warnings.filterwarnings("ignore")
-load_dotenv()
+
 
 
 # 初始化日志
@@ -3470,8 +3469,9 @@ class Weibo(object):
 
             if self.original_pic_download and "markdown" not in self.write_mode:
                 self.download_files("img", "original", wrote_count)
-            if self.original_live_photo_download:
-                self.download_files("live_photo", "original", wrote_count)
+            # live_photo 通过 _download_weibo_images 下载到 img 文件夹，不再单独下载
+            # if self.original_live_photo_download:
+            #     self.download_files("live_photo", "original", wrote_count)
             if self.original_video_download:
                 self.download_files("video", "original", wrote_count)
             # 下载转发微博文件（如果不禁爬转发）
@@ -3480,8 +3480,8 @@ class Weibo(object):
                     self.download_files("img", "retweet", wrote_count)
                 if self.retweet_video_download:
                     self.download_files("video", "retweet", wrote_count)
-                if self.retweet_live_photo_download:
-                    self.download_files("live_photo", "retweet", wrote_count)
+                # if self.retweet_live_photo_download:
+                #     self.download_files("live_photo", "retweet", wrote_count)
 
     def get_pages(self):
         """获取全部微博"""
@@ -3666,7 +3666,12 @@ class Weibo(object):
                         f.write(cmd + "\n")
             
             logger.info("所有视频下载命令执行完成")
-            
+
+            # 删除命令文件
+            if os.path.exists(cmd_file_path):
+                os.remove(cmd_file_path)
+                logger.info(f"已删除命令文件: {cmd_file_path}")
+
             # 如果有失败的命令，提示用户
             if os.path.exists(failed_cmd_file_path) and os.path.getsize(failed_cmd_file_path) > 0:
                 logger.warning(f"部分视频下载失败，请查看: {failed_cmd_file_path}")
