@@ -24,7 +24,8 @@ MEDIA_KEYWORDS = ('img/', '视频', 'Live Photo', '网页链接')
 
 def sanitize_text(text: str, max_len: int = 50) -> str:
     """清理文本用于文件名：去除非法字符、合并空白、截断至指定长度"""
-    cleaned = ILLEGAL_CHARS.sub('', text).strip()
+    cleaned = re.sub(r'<!--.*?-->', '', text)
+    cleaned = ILLEGAL_CHARS.sub('', cleaned).strip()
     cleaned = re.sub(r'\s+', '_', cleaned)
     cleaned = cleaned.strip('_.')
     if not cleaned:
@@ -67,6 +68,8 @@ def _extract_text_from_body(body: str) -> str:
     for line in body.splitlines():
         line = line.strip()
         if not line:
+            continue
+        if line.startswith('<!--'):
             continue
         if _is_media_line(line):
             continue
@@ -356,6 +359,65 @@ def update_md_references(md_path: str, plan: List[Dict],
         logger.info(f"[更新] {md_path}: 更新 {changes} 处引用")
 
 
+def reorder_live_photos(md_path: str, dry_run: bool = True) -> None:
+    """将 Markdown 中散落的 Live Photo <video> 标签移到对应图片下方，使图文成对排列
+
+    处理流程：
+    1. 收集所有未被标记处理的 <video> 标签，按文件名建立索引
+    2. 从原文中删除这些散落的视频标签
+    3. 遍历图片引用，若匹配到同名视频则插入到图片下方并标记已处理
+    """
+    with open(md_path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    unprocessed_pattern = re.compile(
+        r'(<video src="live_photo/[^"]+/([^"]+)\.mov" controls></video>)'
+        r'(?!\s*<!-- processed_live_photo -->)'
+    )
+    new_videos = unprocessed_pattern.findall(text)
+    video_dict: Dict[str, str] = {name: tag for tag, name in new_videos}
+
+    if not video_dict:
+        return
+
+    # 删除所有未被标记处理的散落视频标签及尾部空白
+    text = re.sub(
+        r'<video src="live_photo/[^"]+\.mov" controls></video>\s*'
+        r'(?!\s*<!-- processed_live_photo -->)',
+        '',
+        text,
+    )
+
+    def replacer(match: re.Match) -> str:
+        full_match = match.group(0)
+        img_tag = match.group(1)
+        img_name = match.group(2)
+
+        if "<!-- processed_live_photo -->" in full_match:
+            return full_match
+
+        if img_name in video_dict:
+            return f"{img_tag}\n{video_dict[img_name]}\n<!-- processed_live_photo -->"
+
+        return full_match
+
+    image_pattern = re.compile(
+        r'(!\[img\]\(img/([^)]+)\.jpg\))'
+        r'(?:[\s\n]*<video.*?</video>[\s\n]*<!-- processed_live_photo -->)?'
+    )
+    final_text = image_pattern.sub(replacer, text)
+
+    if final_text == text:
+        return
+
+    if dry_run:
+        logger.info(f"[预览] {md_path}: 需调整 {len(video_dict)} 个 Live Photo 顺序")
+    else:
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(final_text)
+        logger.info(f"[调整] {md_path}: 已调整 {len(video_dict)} 个 Live Photo 顺序")
+
+
 def _collect_md_files(user_dir: str) -> List[str]:
     """递归收集用户目录下所有 Markdown 文件"""
     md_files: List[str] = []
@@ -398,6 +460,7 @@ def process_user_dir(user_dir: str, dry_run: bool = True) -> None:
 
     for md_path in md_files:
         update_md_references(md_path, plan, dry_run)
+        reorder_live_photos(md_path, dry_run)
 
 
 def main() -> None:
