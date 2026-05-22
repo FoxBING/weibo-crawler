@@ -1,3 +1,7 @@
+---
+alwaysApply: false
+description: 
+---
 # weibo-crawler 项目架构与逻辑文档
 
 ## 项目概述
@@ -351,12 +355,36 @@ start()
 
 ### rename_files.py
 
-独立脚本，将已下载的媒体文件按 `{YYYYMMDD}_{正文前50字符}_{微博ID}_{序号}.{后缀}` 规则重命名。
+独立脚本，将已下载的媒体文件按 `{YYYYMMDD}_{正文前50字符}_{微博ID}_{序号}.{后缀}` 规则重命名，并同步更新 Markdown 中的引用路径和 Live Photo 排列顺序。
 
-- 从 Markdown 文件解析微博元数据（时间戳 + weibo_id）
-- 预建磁盘文件索引（`build_disk_index`）
-- 通过时间戳前缀精确匹配文件（`heading_to_prefix`）
-- 支持预览模式（`preview`）和执行模式（`apply`）
+**完整处理流程**（`process_user_dir`）：
+
+1. 解析 Markdown 文件，提取每条微博的元数据（时间戳、weibo_id、正文）
+2. 扫描磁盘文件，通过时间戳前缀或微博 ID 匹配媒体文件
+3. 按规则生成新文件名并执行重命名（`execute_rename`）
+4. 更新 Markdown 中的媒体引用路径（`update_md_references`）
+   - 图片保持 `![img](path)` 语法
+   - 视频文件（.mov/.mp4）自动转换为 `<video src="path" controls></video>` 嵌入语法
+5. 调整 Live Photo 顺序（`reorder_live_photos`）
+   - 将散落在图片列表之后的 `<video>` 标签移到对应同名图片下方
+   - 用 `<!-- processed_live_photo -->` HTML 注释标记已处理的图文对，确保幂等
+
+**关键函数**：
+
+| 函数 | 职责 |
+|------|------|
+| `parse_md_sections` | 解析 Markdown，按 `### 时间 / <!-- weibo_id -->` 分段提取元数据 |
+| `_extract_text_from_body` | 从正文中提取纯文本，跳过媒体行和 HTML 注释行 |
+| `sanitize_text` | 清理文本用于文件名：去除 HTML 注释、非法字符、截断至 50 字符 |
+| `build_disk_index` | 扫描用户目录下所有媒体文件，建立文件名索引 |
+| `find_files_for_section` | 通过时间戳前缀或微博 ID 匹配磁盘文件 |
+| `build_rename_plan` | 为所有微博段构建重命名计划，按目录+扩展名分组分配序号 |
+| `update_md_references` | 按微博段逐段重建引用路径，视频文件转为 `<video>` 嵌入语法 |
+| `reorder_live_photos` | 将 Live Photo 视频标签移到同名图片下方，支持幂等重复执行 |
+
+**命令**：
+- `python rename_files.py preview <目录>` — 预览模式，不实际改名
+- `python rename_files.py apply <目录>` — 实际执行改名
 
 ### test_weibo.py
 
