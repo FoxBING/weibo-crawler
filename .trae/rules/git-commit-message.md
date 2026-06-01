@@ -1,8 +1,8 @@
 ---
-alwaysApply: true
+alwaysApply: false
+description: git_commit时才使用
 scene: git_message
 ---
-
 1. <Header>: 必须是单行，格式为 `<type>(<scope>): <short summary>`
    - <type> 必须是以下之一：
      - feat: 新增功能
