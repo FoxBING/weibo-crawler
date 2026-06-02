@@ -182,6 +182,7 @@ start()
 | `pics` | `get_pics()` — 图片 URL 逗号分隔 |
 | `video_url` | `get_video_url()` — 视频 URL 分号分隔 |
 | `live_photo_url` | `get_live_photo_url()` — Live Photo URL 分号分隔 |
+| `pic_num` | `weibo_info["pic_num"]` — API 声明的媒体项总数（用于下载完整性校验） |
 | `links` | `get_link_urls()` — 正文中的链接 |
 | `location` | `get_location()` — 发布位置 |
 | `created_at` | 原始时间 → `standardize_date()` 标准化 |
@@ -190,14 +191,14 @@ start()
 
 ### 图片提取 (`get_pics`)
 
-1. 遍历 `weibo_info["pics"]`，跳过 `type=video` 的条目
+1. 遍历 `weibo_info["pics"]`，跳过 `type=video` 或含 `videoSrc` 的条目（基于 `videoSrc` 字段判断视频更可靠）
 2. 取 `pic["large"]["url"]`，替换路径中的尺寸标识为 `/large/`（确保原图）
 3. 兼容正文内嵌图片链接（`get_inline_image_urls`）
 
 ### 视频提取 (`get_video_url`)
 
-1. 优先从 `pics` 中提取 `type=video` 的 `videoSrc`
-2. 回退到 `page_info`：
+1. 遍历 `pics`，提取所有含 `videoSrc` 的条目（不依赖不稳定的 `type="video"` 标记）
+2. 若 `pics` 中未找到视频，回退到 `page_info`：
    - 优先 `page_url`（`video.weibo.com/show?fid=xxx` 格式，用于 yt-dlp）
    - 回退 `media_info` 中的直接下载地址（优先级：720p > hd > sd）
 
@@ -305,6 +306,50 @@ start()
 - 命令写入 `yt-dlp_commands.txt`
 - 当前用户处理完后统一执行（`execute_stored_video_downloads`）
 
+### handle_download
+
+三种媒体类型（img/video/live_photo）的统一下载入口。输出格式：
+
+```
+→ {用户名} ({微博ID}, {时间}) | 图片: N 张
+  {文件名1}
+  {文件名2}
+  ...
+→ {用户名} ({微博ID}, {时间}) | 视频: N 个
+  {文件名}
+```
+
+- `video.weibo.com/show` 链接标注为 `(yt-dlp)`，不实际下载
+- 通过 `tqdm.write` 输出，避免与 tqdm 进度条混行
+
+### 下载完整性校验 (`_verify_downloads`)
+
+在 `write_data` 末尾自动调用，检查每批下载的微博：
+
+1. 读取各媒体目录下的 `not_downloaded.txt`，收集下载失败的微博 ID
+2. 逐条比对 `pic_num`（API 声明总数）与 `pics` + `video_url` + `live_photo_url` 的实际提取数
+3. 输出差异报告到控制台和 `download_report.txt`（增量追加，每次带时间戳）
+
+输出示例：
+```
+============================================================
+下载完整性检查报告
+============================================================
+  ⚠️  微博 ID=5305104729117130: API 声明 14 项, 实际提取到 8 图 + 1 视频 + 0 Live Photo = 9 项 (相差 5 项)
+============================================================
+```
+
+### 下载 stdout 输出优化
+
+`logging.conf` 中 `[logger_weibo] level=INFO`（原为 DEBUG），控制台只显示关键信息：
+
+- `→ {用户名} ({ID}, {时间}) | 图片: N 张` — 每微博图片下载总结
+- `  {文件名}` — 逐文件下载进度
+- `动态延迟: X.X 秒` — 防封禁延迟提示
+- `下载完整性检查报告` — 下载完成后的校验结果
+
+每文件级别的 `[DEBUG] save` / `[EXIF]` / `[FILE]` / `[DEBUG] success` 仅在调试时可见（修改 `logging.conf` 恢复 DEBUG）。
+
 ---
 
 ## 数据持久化
@@ -389,6 +434,12 @@ start()
 ### test_weibo.py
 
 单条微博测试脚本，读取 `config.json` 配置，指定微博 ID 下载到 `test` 目录。
+
+- 支持命令行参数：`python test_weibo.py <微博ID>`（无需交互输入）
+- 自动判断长微博（`pic_num > 9`），调用 `get_long_weibo` 获取完整内容
+- 输出媒体统计（API `pic_num` vs 实际 `pics`/`video_url`/`live_photo_url` 提取数）
+- 打印原始 API `pics` 数组结构和 `page_info` 信息，便于调试 API 返回数据
+- 内置 `_verify_downloads` 完整性检查，输出到控制台和 `download_report.txt`
 
 ### download_single_video.py
 

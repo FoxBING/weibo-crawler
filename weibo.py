@@ -629,7 +629,7 @@ class Weibo(object):
                 # 防封禁：动态延迟
                 delay = self.calculate_dynamic_delay()
                 if delay > 0:
-                    logger.debug(f"动态延迟: {delay:.1f} 秒")
+                    logger.info(f"动态延迟: {delay:.1f} 秒")
                     sleep(delay)
 
                 response = self.session.get(url, params=params, headers=current_headers, timeout=10)
@@ -807,7 +807,7 @@ class Weibo(object):
                 # 防封禁：动态延迟
                 delay = self.calculate_dynamic_delay()
                 if delay > 0:
-                    logger.debug(f"动态延迟: {delay:.1f} 秒")
+                    logger.info(f"动态延迟: {delay:.1f} 秒")
                     sleep(delay)
 
                 response = self.session.get(url, params=params, headers=current_headers, timeout=10)
@@ -927,8 +927,8 @@ class Weibo(object):
             for pic in pic_info:
                 if not isinstance(pic, dict) or not pic.get('large'):
                     continue
-                # 跳过视频类型（多视频微博中视频以 type=video 存在 pics 中）
-                if pic.get('type') == 'video':
+                # 跳过视频类型（有 videoSrc 或 type=video 的都视为视频）
+                if pic.get('type') == 'video' or pic.get('videoSrc'):
                     continue
                 url = pic['large']['url']
                 # 将 URL 中的非原图尺寸标识替换为 large，确保获取原图
@@ -1023,12 +1023,10 @@ class Weibo(object):
     def get_video_url(self, weibo_info):
         """获取微博普通视频URL"""
         video_urls = []
-        # 1. 从 pics 中提取多视频（多视频微博中视频以 type=video 存在 pics 中，
-        #    视频URL在 videoSrc 字段）
+        # 1. 从 pics 中提取多视频（视频以 videoSrc 或 type=video 标记）
         if weibo_info.get("pics"):
             for pic in weibo_info["pics"]:
-                if (isinstance(pic, dict) and pic.get("type") == "video"
-                        and pic.get("videoSrc")):
+                if isinstance(pic, dict) and pic.get("videoSrc"):
                     video_urls.append(pic["videoSrc"])
         # 2. 如果 pics 中没有视频，回退到 page_info（单视频兼容）
         if not video_urls and weibo_info.get("page_info"):
@@ -1315,13 +1313,12 @@ class Weibo(object):
         """处理下载相关操作"""
         file_prefix = w["created_at"][:11].replace("-", "") + "_" + str(w["id"])
         if file_type == "img":
+            url_list = [u for u in urls.split(",") if u and not u.startswith("https://zzx.sinaimg.cn")]
+            user = w.get("screen_name", "")
+            created_short = w.get("created_at", "")[:19].replace("T", " ")
+            tqdm.write(f"→ {user} ({w['id']}, {created_short}) | 图片: {len(url_list)} 张")
             if "," in urls:
-                url_list = urls.split(",")
                 for i, url in enumerate(url_list):
-                    # 跳过以https://zzx.sinaimg.cn开头的图片URL
-                    if url.startswith("https://zzx.sinaimg.cn"):
-                        logger.info(f"跳过下载zzx.sinaimg.cn图片: {url}")
-                        continue
                     index = url.rfind(".")
                     if len(url) - index >= 5:
                         file_suffix = ".jpg"
@@ -1331,9 +1328,7 @@ class Weibo(object):
                     file_path = file_dir + os.sep + file_name
                     self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
             else:
-                # 跳过以https://zzx.sinaimg.cn开头的图片URL
                 if urls.startswith("https://zzx.sinaimg.cn"):
-                    logger.info(f"跳过下载zzx.sinaimg.cn图片: {urls}")
                     return
                 index = urls.rfind(".")
                 if len(urls) - index > 5:
@@ -1342,29 +1337,40 @@ class Weibo(object):
                     file_suffix = urls[index:]
                 file_name = file_prefix + file_suffix
                 file_path = file_dir + os.sep + file_name
-                self.download_one_file(urls, file_path, file_type, w["id"])
+                self.download_one_file(urls, file_path, file_type, w["id"], w["created_at"])
         elif file_type == "video":
+            url_list = urls.split(";") if ";" in urls else [urls]
+            user = w.get("screen_name", "")
+            created_short = w.get("created_at", "")[:19].replace("T", " ")
+            tqdm.write(f"→ {user} ({w['id']}, {created_short}) | 视频: {len(url_list)} 个")
             if ";" in urls:
-                url_list = urls.split(";")
                 for i, url in enumerate(url_list):
                     file_name = file_prefix + "_" + str(i + 1)
                     file_path = file_dir + os.sep + file_name
                     if url.startswith("https://video.weibo.com/show"):
+                        logger.info(f"  {file_name} (yt-dlp)")
                         self.yd_video_file(url, file_path, w["id"])
                     else:
                         file_path = file_path + ".mp4"
+                        logger.info(f"  {file_name}.mp4")
                         self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
             else:
                 file_name = file_prefix
                 file_path = file_dir + os.sep + file_name
                 if urls.startswith("https://video.weibo.com/show"):
+                    logger.info(f"  {file_name} (yt-dlp)")
                     self.yd_video_file(urls, file_path, w["id"])
                 else:
                     file_path = file_path + ".mp4"
+                    logger.info(f"  {file_name}.mp4")
                     self.download_one_file(urls, file_path, file_type, w["id"], w["created_at"])
 
 
         elif file_type == "live_photo":
+            url_list = urls.split(";") if ";" in urls else [urls]
+            user = w.get("screen_name", "")
+            created_short = w.get("created_at", "")[:19].replace("T", " ")
+            tqdm.write(f"→ {user} ({w['id']}, {created_short}) | Live Photo: {len(url_list)} 个")
             file_suffix = ".mp4"
             if ";" in urls:
                 url_list = urls.split(";")
@@ -1373,6 +1379,7 @@ class Weibo(object):
                         file_suffix = ".mov"
                     file_name = file_prefix + "_" + str(i + 1) + file_suffix
                     file_path = file_dir + os.sep + file_name
+                    logger.info(f"  {file_name}")
                     self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
                     # 视频下载间隔延迟，减少触发CDN限流
                     if i < len(url_list) - 1:
@@ -1382,6 +1389,7 @@ class Weibo(object):
                     file_suffix = ".mov"
                 file_name = file_prefix + file_suffix
                 file_path = file_dir + os.sep + file_name
+                logger.info(f"  {file_name}")
                 self.download_one_file(urls, file_path, file_type, w["id"], w["created_at"])
 
     def get_download_file_names(self, file_type, urls, w):
@@ -1431,17 +1439,15 @@ class Weibo(object):
                 describe = "视频"
                 key = "video_url"
             elif file_type == "live_photo":
-                describe = "Live Photo视频"
+                describe = "Live Photo"
                 key = "live_photo_url"
             else:
                 return
             
             if weibo_type == "original":
-                describe = "原创微博" + describe
+                describe = "原创" + describe
             else:
-                describe = "转发微博" + describe
-            
-            logger.info("即将进行%s下载", describe)
+                describe = "转发" + describe
             
             # 检查是否有文件需要下载
             has_files = False
@@ -1456,14 +1462,13 @@ class Weibo(object):
                     break
             
             if not has_files:
-                logger.info("没有%s需要下载", describe)
                 return
             
             # 对于 markdown 模式下的 day_by_month，按月份分组下载
             if "markdown" in self.write_mode and self.markdown_split_by == "day_by_month":
                 base_dir = self.get_filepath("markdown")
                 
-                for w in tqdm(self.weibo[wrote_count:], desc="Download progress"):
+                for w in tqdm(self.weibo[wrote_count:], desc=describe):
                     # 对于转发微博，使用父微博的日期确定月份文件夹
                     # 这样转发的内容会与父微博保存在同一个月份目录中
                     parent_created_at = w.get("created_at", "")
@@ -1492,8 +1497,6 @@ class Weibo(object):
                         os.makedirs(file_dir)
                     
                     self.handle_download(file_type, file_dir, weibo_data.get(key), weibo_data)
-                
-                logger.info("%s下载完毕", describe)
             else:
                 # 原有逻辑：所有文件放在同一目录
                 file_dir = self.get_filepath(file_type)
@@ -1502,7 +1505,7 @@ class Weibo(object):
                 if not os.path.isdir(file_dir):
                     os.makedirs(file_dir)
                 
-                for w in tqdm(self.weibo[wrote_count:], desc="Download progress"):
+                for w in tqdm(self.weibo[wrote_count:], desc=describe):
                     if weibo_type == "retweet":
                         if w.get("retweet"):
                             w = w["retweet"]
@@ -1510,9 +1513,6 @@ class Weibo(object):
                             continue
                     if w.get(key):
                         self.handle_download(file_type, file_dir, w.get(key), w)
-                
-                logger.info("%s下载完毕,保存路径:", describe)
-                logger.info(file_dir)
         except Exception as e:
             logger.exception(e)
 
@@ -1645,6 +1645,7 @@ class Weibo(object):
         weibo["links"] = self.get_link_urls(selector)
         weibo["location"] = self.get_location(selector)
         weibo["created_at"] = weibo_info["created_at"]
+        weibo["pic_num"] = weibo_info.get("pic_num", 0)
         weibo["source"] = weibo_info["source"]
         weibo["attitudes_count"] = self.string_to_int(
             weibo_info.get("attitudes_count", 0)
@@ -3123,6 +3124,9 @@ class Weibo(object):
             return
 
         pics = weibo["pics"].split(",")
+        valid_pics = [p for p in pics if p and not p.startswith("https://zzx.sinaimg.cn")]
+        user = weibo.get("screen_name", "")
+        logger.info(f"→ {user} ({weibo['id']}, {date_str} {time_str}) | 图片: {len(valid_pics)} 张")
         for i, pic_url in enumerate(pics):
             if not pic_url:
                 continue
@@ -3130,7 +3134,7 @@ class Weibo(object):
             # 生成图片文件名：YYYY-MM-DD_HH-MM-SS.jpg
             # 如果同一条微博有多张图片，在文件名后加 _1, _2 等后缀
             if pic_url.startswith("https://zzx.sinaimg.cn"):
-                logger.info(f"跳过下载zzx.sinaimg.cn图片: {pic_url}")
+                logger.debug(f"跳过下载zzx.sinaimg.cn图片: {pic_url}")
                 continue
 
             base_filename = f"{date_str}_{time_str.replace(':', '-')}"
@@ -3142,6 +3146,7 @@ class Weibo(object):
             img_path = os.path.join(img_dir, img_filename)
 
             # 下载图片
+            logger.info(f"  {img_filename}")
             self.download_one_file(pic_url, img_path, "img", weibo["id"], created_at)
 
     def get_markdown_image_filenames(self, weibo, fallback_created_at=""):
@@ -3446,6 +3451,90 @@ class Weibo(object):
                     self.download_files("video", "retweet", wrote_count)
                 if self.retweet_live_photo_download:
                     self.download_files("live_photo", "retweet", wrote_count)
+
+        self._verify_downloads(wrote_count)
+
+    def _verify_downloads(self, wrote_count: int) -> None:
+        """验证下载完整性，报告缺失或失败的微博"""
+        weibo_list = self.weibo[wrote_count:]
+        if not weibo_list:
+            return
+
+        incomplete = []
+        failed_ids = set()
+
+        # 1. 检查 not_downloaded.txt
+        for media_type in ("img", "video", "live_photo"):
+            nd_path = self.get_filepath(media_type) + os.sep + "not_downloaded.txt"
+            if os.path.isfile(nd_path):
+                with open(nd_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        parts = line.split(":")
+                        if parts:
+                            try:
+                                wid = int(parts[0])
+                                failed_ids.add(wid)
+                            except ValueError:
+                                pass
+
+        # 2. 逐条微博核对 pic_num vs 实际提取数
+        for w in weibo_list:
+            wid = w.get("id", "")
+            pic_num = w.get("pic_num", 0)
+            if not pic_num:
+                continue
+
+            pic_count = len([u for u in w.get("pics", "").split(",") if u])
+            video_count = len([u for u in w.get("video_url", "").split(";") if u])
+            lp_count = len([u for u in w.get("live_photo_url", "").split(";") if u])
+            actual_total = pic_count + video_count + lp_count
+
+            if actual_total < pic_num:
+                incomplete.append((wid, pic_num, pic_count, video_count, lp_count, actual_total))
+
+        # 3. 输出报告
+        if incomplete or failed_ids:
+            logger.warning("=" * 60)
+            logger.warning("下载完整性检查报告")
+            logger.warning("=" * 60)
+
+            for wid, pic_num, pc, vc, lpc, actual in incomplete:
+                gap = pic_num - actual
+                logger.warning(
+                    f"  ⚠️  微博 ID={wid}: API 声明 {pic_num} 项, "
+                    f"实际提取到 {pc} 图 + {vc} 视频 + {lpc} Live Photo = {actual} 项 "
+                    f"(相差 {gap} 项)"
+                )
+
+            if failed_ids:
+                logger.warning(f"  ❌  以下微博有文件下载失败，详情见 not_downloaded.txt:")
+                for fid in sorted(failed_ids):
+                    logger.warning(f"     微博 ID={fid}")
+                    url = f"https://m.weibo.cn/detail/{fid}"
+                    logger.warning(f"     https://m.weibo.cn/detail/{fid}")
+
+            logger.warning("=" * 60)
+
+        # 4. 同时写入 download_report.txt
+        if incomplete or failed_ids:
+            report_path = os.path.join(self.get_filepath("markdown"), "download_report.txt")
+            mode = "a" if os.path.isfile(report_path) else "w"
+            with open(report_path, mode, encoding="utf-8") as f:
+                f.write(f"\n--- {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+                for wid, pic_num, pc, vc, lpc, actual in incomplete:
+                    gap = pic_num - actual
+                    f.write(
+                        f"⚠️  微博 ID={wid}: API 声明 {pic_num} 项, "
+                        f"实际提取到 {pc} 图 + {vc} 视频 + {lpc} Live Photo = {actual} 项 "
+                        f"(相差 {gap} 项)\n"
+                    )
+                    f.write(f"    https://m.weibo.cn/detail/{wid}\n")
+                for fid in sorted(failed_ids):
+                    f.write(f"❌  微博 ID={fid} 有文件下载失败\n")
+                    f.write(f"    https://m.weibo.cn/detail/{fid}\n")
 
     def get_pages(self):
         """获取全部微博"""
