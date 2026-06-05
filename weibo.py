@@ -927,9 +927,19 @@ class Weibo(object):
             for pic in pic_info:
                 if not isinstance(pic, dict) or not pic.get('large'):
                     continue
-                # 跳过视频类型（有 videoSrc 或 type=video 的都视为视频）
+                # 跳过视频类型：有 videoSrc 且 type=video 的视为纯视频
+                # 注意：Live Photo 在 pics 中同时有 large.url（封面图）和 videoSrc（.mov 视频），不要跳过
                 if pic.get('type') == 'video' or pic.get('videoSrc'):
-                    continue
+                    video_src = pic.get('videoSrc', '') or ''
+                    # 如果 videoSrc 指向 .mov 文件且有 large.url 封面图，说明是 Live Photo，保留封面图
+                    if pic.get('large') and video_src.endswith('.mov'):
+                        pass  # Live Photo，保留封面图URL
+                    else:
+                        if not video_src:
+                            # 只有 type=video 没有 videoSrc，跳过
+                            continue
+                        # 有 videoSrc 但不是 .mov，是普通视频，跳过
+                        continue
                 url = pic['large']['url']
                 # 将 URL 中的非原图尺寸标识替换为 large，确保获取原图
                 url = re.sub(
@@ -1024,10 +1034,15 @@ class Weibo(object):
         """获取微博普通视频URL"""
         video_urls = []
         # 1. 从 pics 中提取多视频（视频以 videoSrc 或 type=video 标记）
+        #    注意：Live Photo 的 videoSrc 指向 .mov，由 get_live_photo_url 专门处理，这里跳过
         if weibo_info.get("pics"):
             for pic in weibo_info["pics"]:
                 if isinstance(pic, dict) and pic.get("videoSrc"):
-                    video_urls.append(pic["videoSrc"])
+                    video_src = pic["videoSrc"]
+                    # 跳过 Live Photo（.mov 格式），避免与 live_photo 重复下载
+                    if video_src.endswith('.mov'):
+                        continue
+                    video_urls.append(video_src)
         # 2. 如果 pics 中没有视频，回退到 page_info（单视频兼容）
         if not video_urls and weibo_info.get("page_info"):
             if weibo_info["page_info"].get("type") == "video":
@@ -1444,10 +1459,22 @@ class Weibo(object):
             else:
                 return
             
-            if weibo_type == "original":
-                describe = "原创" + describe
+            # 保持与 Markdown 引用路径一致：原创微博视频/原创微博Live Photo视频
+            if file_type == "video":
+                if weibo_type == "original":
+                    describe = "原创微博视频"
+                else:
+                    describe = "转发微博视频"
+            elif file_type == "live_photo":
+                if weibo_type == "original":
+                    describe = "原创微博Live Photo视频"
+                else:
+                    describe = "转发微博Live Photo视频"
             else:
-                describe = "转发" + describe
+                if weibo_type == "original":
+                    describe = "原创" + describe
+                else:
+                    describe = "转发" + describe
             
             # 检查是否有文件需要下载
             has_files = False
