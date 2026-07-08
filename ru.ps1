@@ -1,0 +1,2 @@
+python weibo.py
+pause
