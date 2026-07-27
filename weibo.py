@@ -89,6 +89,46 @@ class Weibo(object):
             "write_mode"
         ]  # 结果信息保存类型，为list形式，可包含csv、mongo和mysql三种类型
         self.markdown_split_by = config.get("markdown_split_by", "day") # markdown文件分割方式，day/day_by_month/month/year/all
+        self.markdown_sort_order = config.get("markdown_sort_order", "new_to_old") # markdown中微博排序方式，new_to_old/old_to_new
+        self.markdown_image_order = config.get("markdown_image_order", "live_photo_first") # markdown中图片与Live Photo的排列顺序，live_photo_first/image_first_interleaved
+        # markdown 媒体预览配置，默认值
+        default_preview = {
+            "link_preview": 0,
+            "original_video_preview": 0,
+            "retweet_video_preview": 0,
+            "original_image_preview": 1,
+            "retweet_image_preview": 1,
+            "original_live_photo_preview": 0,
+            "retweet_live_photo_preview": 0,
+            "inline_image_preview": 1,
+        }
+        md_preview = config.get("markdown_preview", {})
+        # 合并用户配置，缺失的 key 使用默认值
+        self.markdown_preview = {**default_preview, **md_preview} if isinstance(md_preview, dict) else default_preview
+
+        # markdown 中各类媒体文件的相对路径目录名
+        default_md_dir = {
+            "original_image_dir": "img",
+            "retweet_image_dir": "img",
+            "original_video_dir": "原创微博视频",
+            "retweet_video_dir": "转发微博视频",
+            "original_live_photo_dir": "原创微博Live Photo视频",
+            "retweet_live_photo_dir": "转发微博Live Photo视频",
+        }
+        md_file_dir = config.get("markdown_file_dir", {})
+        self.markdown_file_dir = {**default_md_dir, **md_file_dir} if isinstance(md_file_dir, dict) else default_md_dir
+
+        # 下载后本地存储的文件夹名称
+        default_dl_folder = {
+            "original_image_folder": "原创微博图片",
+            "retweet_image_folder": "转发微博图片",
+            "original_video_folder": "原创微博视频",
+            "retweet_video_folder": "转发微博视频",
+            "original_live_photo_folder": "原创微博Live Photo视频",
+            "retweet_live_photo_folder": "转发微博Live Photo视频",
+        }
+        dl_folder = config.get("download_folder_name", {})
+        self.download_folder_name = {**default_dl_folder, **dl_folder} if isinstance(dl_folder, dict) else default_dl_folder
         self.original_pic_download = config[
             "original_pic_download"
         ]  # 取值范围为0、1, 0代表不下载原创微博图片,1代表下载
@@ -127,6 +167,8 @@ class Weibo(object):
         self.output_directory = config.get(
             "output_directory", "weibo"
         )  # 输出目录配置，默认为"weibo"
+
+        self.missing_weibo_report = config.get("missing_weibo_report", 0)  # 是否生成缺失微博报告
         
         # Cookie支持：优先使用环境变量WEIBO_COOKIE，其次使用config.json中的配置
         cookie_config = config.get("cookie")
@@ -183,7 +225,7 @@ class Weibo(object):
             'sec-fetch-mode': 'navigate',
             'sec-fetch-site': 'same-origin',
             'upgrade-insecure-requests': '1',
-            'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0',
         }
         self.mysql_config = config.get("mysql_config")  # MySQL数据库连接配置，可以不填
         self.mongodb_URI = config.get("mongodb_URI")  # MongoDB数据库连接字符串，可以不填
@@ -457,6 +499,7 @@ class Weibo(object):
             "retweet_live_photo_download",
             "download_comment",
             "download_repost",
+            "missing_weibo_report",
         ]
         for argument in argument_list:
             # 使用 get() 获取值，新增字段默认为0
@@ -491,6 +534,61 @@ class Weibo(object):
         if markdown_split_by not in ["day", "day_by_month", "month", "year", "all"]:
             logger.warning("markdown_split_by值应为day、day_by_month、month、year或all,请重新输入")
             sys.exit()
+
+        # 验证markdown_image_order
+        markdown_image_order = config.get("markdown_image_order", "live_photo_first")
+        if markdown_image_order not in ["live_photo_first", "image_first_interleaved"]:
+            logger.warning("markdown_image_order值应为live_photo_first或image_first_interleaved,请重新输入")
+            sys.exit()
+
+        # 验证markdown_sort_order
+        markdown_sort_order = config.get("markdown_sort_order", "new_to_old")
+        if markdown_sort_order not in ["new_to_old", "old_to_new"]:
+            logger.warning("markdown_sort_order值应为new_to_old或old_to_new,请重新输入")
+            sys.exit()
+
+        # 验证markdown_preview
+        md_preview = config.get("markdown_preview", {})
+        if isinstance(md_preview, dict):
+            valid_preview_keys = [
+                "link_preview", "original_video_preview", "retweet_video_preview",
+                "original_image_preview", "retweet_image_preview",
+                "original_live_photo_preview", "retweet_live_photo_preview",
+                "inline_image_preview",
+            ]
+            for key in md_preview:
+                if key not in valid_preview_keys:
+                    logger.warning("markdown_preview中存在无效键: %s, 有效键为: %s", key, ", ".join(valid_preview_keys))
+                    sys.exit()
+                if md_preview[key] not in (0, 1):
+                    logger.warning("markdown_preview.%s 值应为0或1,请重新输入", key)
+                    sys.exit()
+
+        # 验证markdown_file_dir
+        md_file_dir = config.get("markdown_file_dir", {})
+        if isinstance(md_file_dir, dict):
+            valid_md_dir_keys = [
+                "original_image_dir", "retweet_image_dir",
+                "original_video_dir", "retweet_video_dir",
+                "original_live_photo_dir", "retweet_live_photo_dir",
+            ]
+            for key in md_file_dir:
+                if key not in valid_md_dir_keys:
+                    logger.warning("markdown_file_dir中存在无效键: %s, 有效键为: %s", key, ", ".join(valid_md_dir_keys))
+                    sys.exit()
+
+        # 验证download_folder_name
+        dl_folder = config.get("download_folder_name", {})
+        if isinstance(dl_folder, dict):
+            valid_dl_keys = [
+                "original_image_folder", "retweet_image_folder",
+                "original_video_folder", "retweet_video_folder",
+                "original_live_photo_folder", "retweet_live_photo_folder",
+            ]
+            for key in dl_folder:
+                if key not in valid_dl_keys:
+                    logger.warning("download_folder_name中存在无效键: %s, 有效键为: %s", key, ", ".join(valid_dl_keys))
+                    sys.exit()
 
         # 验证user_id_list
         user_id_list = config["user_id_list"]
@@ -629,7 +727,7 @@ class Weibo(object):
                 # 防封禁：动态延迟
                 delay = self.calculate_dynamic_delay()
                 if delay > 0:
-                    logger.info(f"动态延迟: {delay:.1f} 秒")
+                    logger.debug(f"动态延迟: {delay:.1f} 秒")
                     sleep(delay)
 
                 response = self.session.get(url, params=params, headers=current_headers, timeout=10)
@@ -807,7 +905,7 @@ class Weibo(object):
                 # 防封禁：动态延迟
                 delay = self.calculate_dynamic_delay()
                 if delay > 0:
-                    logger.info(f"动态延迟: {delay:.1f} 秒")
+                    logger.debug(f"动态延迟: {delay:.1f} 秒")
                     sleep(delay)
 
                 response = self.session.get(url, params=params, headers=current_headers, timeout=10)
@@ -927,19 +1025,9 @@ class Weibo(object):
             for pic in pic_info:
                 if not isinstance(pic, dict) or not pic.get('large'):
                     continue
-                # 跳过视频类型：有 videoSrc 且 type=video 的视为纯视频
-                # 注意：Live Photo 在 pics 中同时有 large.url（封面图）和 videoSrc（.mov 视频），不要跳过
-                if pic.get('type') == 'video' or pic.get('videoSrc'):
-                    video_src = pic.get('videoSrc', '') or ''
-                    # 如果 videoSrc 指向 .mov 文件且有 large.url 封面图，说明是 Live Photo，保留封面图
-                    if pic.get('large') and video_src.endswith('.mov'):
-                        pass  # Live Photo，保留封面图URL
-                    else:
-                        if not video_src:
-                            # 只有 type=video 没有 videoSrc，跳过
-                            continue
-                        # 有 videoSrc 但不是 .mov，是普通视频，跳过
-                        continue
+                # 跳过视频类型（多视频微博中视频以 type=video 存在 pics 中）
+                if pic.get('type') == 'video':
+                    continue
                 url = pic['large']['url']
                 # 将 URL 中的非原图尺寸标识替换为 large，确保获取原图
                 url = re.sub(
@@ -1026,47 +1114,64 @@ class Weibo(object):
 
 
     def get_live_photo_url(self, weibo_info):
-        """获取Live Photo视频URL"""
-        live_photo_list = weibo_info.get("live_photo", [])
-        return ";".join(live_photo_list) if live_photo_list else ""
+        """获取Live Photo视频URL及其在过滤后pics数组中的位置索引
+
+        从 pics 数组中提取 type='livephoto' 的 videoSrc 字段，
+        并使用与 get_pics() 相同的过滤逻辑，使 live_photo 的文件名索引
+        与对应的 still image 文件名索引保持一致。
+
+        返回 dict: {"url": 分号分隔的URL字符串, "indices": [1-based位置列表]}
+        """
+        pic_info = weibo_info.get("pics") or []
+        urls = []
+        indices = []
+
+        if pic_info:
+            filtered_pos = 0  # 在过滤后的 pics 列表中的 1-based 位置
+            for pic in pic_info:
+                # 与 get_pics() 保持完全一致的过滤逻辑
+                if not isinstance(pic, dict) or not pic.get('large'):
+                    continue
+                if pic.get('type') == 'video':
+                    continue
+                filtered_pos += 1
+
+                # 检查该 pic 是否是 livephoto 类型并有 videoSrc
+                if pic.get('type') == 'livephoto' and pic.get('videoSrc'):
+                    urls.append(pic['videoSrc'])
+                    indices.append(filtered_pos)
+
+        return {
+            "url": ";".join(urls) if urls else "",
+            "indices": indices  # 1-based 位置列表
+        }
 
     def get_video_url(self, weibo_info):
         """获取微博普通视频URL"""
         video_urls = []
-        # 1. 从 pics 中提取多视频（视频以 videoSrc 或 type=video 标记）
-        #    注意：Live Photo 的 videoSrc 指向 .mov，由 get_live_photo_url 专门处理，这里跳过
+        # 1. 从 pics 中提取多视频（多视频微博中视频以 type=video 存在 pics 中，
+        #    视频URL在 videoSrc 字段）
         if weibo_info.get("pics"):
             for pic in weibo_info["pics"]:
-                if isinstance(pic, dict) and pic.get("videoSrc"):
-                    video_src = pic["videoSrc"]
-                    # 跳过 Live Photo（.mov 格式），避免与 live_photo 重复下载
-                    if video_src.endswith('.mov'):
-                        continue
-                    video_urls.append(video_src)
+                if (isinstance(pic, dict) and pic.get("type") == "video"
+                        and pic.get("videoSrc")):
+                    video_urls.append(pic["videoSrc"])
         # 2. 如果 pics 中没有视频，回退到 page_info（单视频兼容）
         if not video_urls and weibo_info.get("page_info"):
             if weibo_info["page_info"].get("type") == "video":
-                # 优先使用 page_url（video.weibo.com/show?fid=xxx 格式），便于 yt-dlp 下载
-                page_url = weibo_info["page_info"].get("page_url")
-                if page_url:
-                    match = re.search(r'fid=([^&]*)', page_url)
-                    if match:
-                        video_urls.append(f"https://video.weibo.com/show?fid={unquote(match.group(1))}")
-                # 回退到 media_info 中的直接下载地址
-                if not video_urls:
-                    media_info = (weibo_info["page_info"].get("urls")
-                                 or weibo_info["page_info"].get("media_info"))
-                    if media_info:
-                        url = (media_info.get("mp4_720p_mp4") or
-                               media_info.get("mp4_hd_mp4") or
-                               media_info.get("mp4_hd_url") or
-                               media_info.get("hevc_mp4_hd") or
-                               media_info.get("mp4_sd_url") or
-                               media_info.get("mp4_ld_mp4") or
-                               media_info.get("stream_url_hd") or
-                               media_info.get("stream_url"))
-                        if url:
-                            video_urls.append(url)
+                media_info = (weibo_info["page_info"].get("urls")
+                             or weibo_info["page_info"].get("media_info"))
+                if media_info:
+                    url = (media_info.get("mp4_720p_mp4") or
+                           media_info.get("mp4_hd_mp4") or
+                           media_info.get("mp4_hd_url") or
+                           media_info.get("hevc_mp4_hd") or
+                           media_info.get("mp4_sd_url") or
+                           media_info.get("mp4_ld_mp4") or
+                           media_info.get("stream_url_hd") or
+                           media_info.get("stream_url"))
+                    if url:
+                        video_urls.append(url)
         return ";".join(video_urls)
 
     def write_exif_time(self, file_path, time_str):
@@ -1098,10 +1203,6 @@ class Weibo(object):
     def download_one_file(self, url, file_path, type, weibo_id, created_at):
         """下载单个文件(图片/视频)"""
         try:
-            # 验证URL是否有效，跳过不完整的URL
-            if not url.startswith(('http://', 'https://')):
-                logger.warning(f"跳过无效URL: {url}")
-                return
 
             file_exist = os.path.isfile(file_path)
             need_download = (not file_exist)
@@ -1171,9 +1272,6 @@ class Weibo(object):
                             logger.debug(f"[DEBUG] PNG 文件不完整: {url} ({try_count}/{MAX_TRY_COUNT})")
                             continue  # 文件不完整，继续重试
                         detected_extension = '.png'
-                    elif downloaded[:4] == b'ftyp':
-                        # MP4/MOV 视频文件
-                        detected_extension = '.mp4'
                     else:
                         # 其他类型，使用原有逻辑处理
                         if inferred_extension in ['mp4', 'mov', 'webm', 'gif', 'bmp', 'tiff']:
@@ -1250,43 +1348,6 @@ class Weibo(object):
                 error_entry = f"{weibo_id}:{file_path}:{url}:{original_url}\n"  # 修改
                 f.write(error_entry.encode(sys.stdout.encoding))
             logger.exception(e)
- 
-    def yd_video_file(self, url, file_path, weibo_id):
-        """将视频下载命令保存到文件，不立即执行"""
-        try:
-            # 验证URL是否有效，跳过不完整的URL
-            if not url.startswith(('http://', 'https://')):
-                logger.warning(f"跳过无效URL: {url}")
-                return
-
-            # 检查文件是否已存在（检查常见视频格式）
-            video_extensions = ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.flv']
-            file_exist = any(os.path.isfile(file_path + ext) for ext in video_extensions)
-            if file_exist:
-                logger.info(f"视频文件已存在，跳过下载: {file_path}")
-                return
-
-            # 构建完整的yt-dlp命令行命令
-            # 使用 %(ext)s 让yt-dlp自动添加正确的视频扩展名
-            yt_dlp_cmd = f'yt-dlp "{url}" --output "{file_path}.%(ext)s"'
-
-            # 将命令保存到txt文件
-            cmd_file_path = os.path.join(self.get_filepath("video"), "yt-dlp_commands.txt")
-            with open(cmd_file_path, "a", encoding="utf-8") as f:
-                f.write(yt_dlp_cmd + "\n")
-
-            logger.info(f"已将视频下载命令保存到: {cmd_file_path}")
-
-        except Exception as e:
-            # 生成原始微博URL
-            original_url = f"https://m.weibo.cn/detail/{weibo_id}"  # 新增
-            error_file = self.get_filepath("video") + os.sep + "not_downloaded.txt"
-            with open(error_file, "ab") as f:
-                # 修改错误条目格式，添加原始URL
-                error_entry = f"{weibo_id}:{file_path}:{url}:{original_url}\n"  # 修改
-                f.write(error_entry.encode(sys.stdout.encoding))
-            logger.exception(e)
-      
 
     def sqlite_exist_file(self, url):
         if not os.path.exists(self.get_sqlte_path()):
@@ -1324,15 +1385,25 @@ class Weibo(object):
         self.sqlite_insert(con, file_data, "bins")
         con.close()
 
+    def _get_timestamp_prefix(self, created_at):
+        """根据微博发布时间生成人类可读的文件名前缀
+        格式：YYYY-MM-DD_HH-MM-SS，与 _download_weibo_images 保持一致
+        """
+        try:
+            time_obj = datetime.strptime(created_at, DTFORMAT)
+            date_str = time_obj.strftime("%Y-%m-%d")
+            time_str = time_obj.strftime("%H:%M:%S")
+            return f"{date_str}_{time_str.replace(':', '-')}"
+        except (ValueError, KeyError):
+            # 回退：使用旧的截断格式
+            return created_at[:11].replace("-", "") + "_" + str(w["id"])
+
     def handle_download(self, file_type, file_dir, urls, w):
         """处理下载相关操作"""
-        file_prefix = w["created_at"][:11].replace("-", "") + "_" + str(w["id"])
+        file_prefix = self._get_timestamp_prefix(w["created_at"])
         if file_type == "img":
-            url_list = [u for u in urls.split(",") if u and not u.startswith("https://zzx.sinaimg.cn")]
-            user = w.get("screen_name", "")
-            created_short = w.get("created_at", "")[:19].replace("T", " ")
-            tqdm.write(f"→ {user} ({w['id']}, {created_short}) | 图片: {len(url_list)} 张")
             if "," in urls:
+                url_list = urls.split(",")
                 for i, url in enumerate(url_list):
                     index = url.rfind(".")
                     if len(url) - index >= 5:
@@ -1343,8 +1414,6 @@ class Weibo(object):
                     file_path = file_dir + os.sep + file_name
                     self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
             else:
-                if urls.startswith("https://zzx.sinaimg.cn"):
-                    return
                 index = urls.rfind(".")
                 if len(urls) - index > 5:
                     file_suffix = ".jpg"
@@ -1354,38 +1423,6 @@ class Weibo(object):
                 file_path = file_dir + os.sep + file_name
                 self.download_one_file(urls, file_path, file_type, w["id"], w["created_at"])
         elif file_type == "video":
-            url_list = urls.split(";") if ";" in urls else [urls]
-            user = w.get("screen_name", "")
-            created_short = w.get("created_at", "")[:19].replace("T", " ")
-            tqdm.write(f"→ {user} ({w['id']}, {created_short}) | 视频: {len(url_list)} 个")
-            if ";" in urls:
-                for i, url in enumerate(url_list):
-                    file_name = file_prefix + "_" + str(i + 1)
-                    file_path = file_dir + os.sep + file_name
-                    if url.startswith("https://video.weibo.com/show"):
-                        logger.info(f"  {file_name} (yt-dlp)")
-                        self.yd_video_file(url, file_path, w["id"])
-                    else:
-                        file_path = file_path + ".mp4"
-                        logger.info(f"  {file_name}.mp4")
-                        self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
-            else:
-                file_name = file_prefix
-                file_path = file_dir + os.sep + file_name
-                if urls.startswith("https://video.weibo.com/show"):
-                    logger.info(f"  {file_name} (yt-dlp)")
-                    self.yd_video_file(urls, file_path, w["id"])
-                else:
-                    file_path = file_path + ".mp4"
-                    logger.info(f"  {file_name}.mp4")
-                    self.download_one_file(urls, file_path, file_type, w["id"], w["created_at"])
-
-
-        elif file_type == "live_photo":
-            url_list = urls.split(";") if ";" in urls else [urls]
-            user = w.get("screen_name", "")
-            created_short = w.get("created_at", "")[:19].replace("T", " ")
-            tqdm.write(f"→ {user} ({w['id']}, {created_short}) | Live Photo: {len(url_list)} 个")
             file_suffix = ".mp4"
             if ";" in urls:
                 url_list = urls.split(";")
@@ -1394,7 +1431,6 @@ class Weibo(object):
                         file_suffix = ".mov"
                     file_name = file_prefix + "_" + str(i + 1) + file_suffix
                     file_path = file_dir + os.sep + file_name
-                    logger.info(f"  {file_name}")
                     self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
                     # 视频下载间隔延迟，减少触发CDN限流
                     if i < len(url_list) - 1:
@@ -1404,7 +1440,31 @@ class Weibo(object):
                     file_suffix = ".mov"
                 file_name = file_prefix + file_suffix
                 file_path = file_dir + os.sep + file_name
-                logger.info(f"  {file_name}")
+                self.download_one_file(urls, file_path, file_type, w["id"], w["created_at"])
+        elif file_type == "live_photo":
+            # 使用 live_photo_indices 使 live_photo 文件名与对应图片文件名一致
+            indices = w.get("live_photo_indices", [])
+            if ";" in urls:
+                url_list = urls.split(";")
+                for j, url in enumerate(url_list):
+                    file_suffix = ".mov" if url.endswith(".mov") else ".mp4"
+                    # 使用 indices 中的对应索引，若缺失则回退到 j+1
+                    idx = indices[j] if j < len(indices) else (j + 1)
+                    file_name = file_prefix + "_" + str(idx) + file_suffix
+                    file_path = file_dir + os.sep + file_name
+                    self.download_one_file(url, file_path, file_type, w["id"], w["created_at"])
+                    if j < len(url_list) - 1:
+                        sleep(random.uniform(1, 3))
+            else:
+                file_suffix = ".mov" if urls.endswith(".mov") else ".mp4"
+                idx = indices[0] if indices else 1
+                # 与图片命名保持一致：多张图片时加序号，单张图片不加序号
+                pics_count = len([p for p in (w.get("pics", "").split(",")) if p]) if w.get("pics") else 0
+                if pics_count > 1:
+                    file_name = file_prefix + "_" + str(idx) + file_suffix
+                else:
+                    file_name = file_prefix + file_suffix
+                file_path = file_dir + os.sep + file_name
                 self.download_one_file(urls, file_path, file_type, w["id"], w["created_at"])
 
     def get_download_file_names(self, file_type, urls, w):
@@ -1412,7 +1472,7 @@ class Weibo(object):
         if not urls:
             return []
 
-        file_prefix = w["created_at"][:11].replace("-", "") + "_" + str(w["id"])
+        file_prefix = self._get_timestamp_prefix(w["created_at"])
         file_names = []
 
         if file_type == "img":
@@ -1430,7 +1490,7 @@ class Weibo(object):
                 else:
                     file_name = file_prefix + file_suffix
                 file_names.append(file_name)
-        elif file_type == "video" or file_type == "live_photo":
+        elif file_type == "video":
             url_list = urls.split(";") if ";" in urls else [urls]
             for i, url in enumerate(url_list):
                 if not url:
@@ -1438,6 +1498,22 @@ class Weibo(object):
                 file_suffix = ".mov" if url.endswith(".mov") else ".mp4"
                 if len(url_list) > 1:
                     file_name = file_prefix + "_" + str(i + 1) + file_suffix
+                else:
+                    file_name = file_prefix + file_suffix
+                file_names.append(file_name)
+        elif file_type == "live_photo":
+            indices = w.get("live_photo_indices", [])
+            url_list = urls.split(";") if ";" in urls else [urls]
+            for j, url in enumerate(url_list):
+                if not url:
+                    continue
+                file_suffix = ".mov" if url.endswith(".mov") else ".mp4"
+                # 使用 indices 中的对应索引
+                idx = indices[j] if j < len(indices) else (j + 1)
+                # 单张图片时不加序号，但仍有多个pics时需加序号以匹配对应图片
+                pics_count = len([p for p in (w.get("pics", "").split(",")) if p]) if w.get("pics") else 0
+                if pics_count > 1:
+                    file_name = file_prefix + "_" + str(idx) + file_suffix
                 else:
                     file_name = file_prefix + file_suffix
                 file_names.append(file_name)
@@ -1450,31 +1526,26 @@ class Weibo(object):
             if file_type == "img":
                 describe = "图片"
                 key = "pics"
+                folder_key = "original_image_folder" if weibo_type == "original" else "retweet_image_folder"
             elif file_type == "video":
                 describe = "视频"
                 key = "video_url"
+                folder_key = "original_video_folder" if weibo_type == "original" else "retweet_video_folder"
             elif file_type == "live_photo":
-                describe = "Live Photo"
+                describe = "Live Photo视频"
                 key = "live_photo_url"
+                folder_key = "original_live_photo_folder" if weibo_type == "original" else "retweet_live_photo_folder"
             else:
                 return
-            
-            # 保持与 Markdown 引用路径一致：原创微博视频/原创微博Live Photo视频
-            if file_type == "video":
-                if weibo_type == "original":
-                    describe = "原创微博视频"
-                else:
-                    describe = "转发微博视频"
-            elif file_type == "live_photo":
-                if weibo_type == "original":
-                    describe = "原创微博Live Photo视频"
-                else:
-                    describe = "转发微博Live Photo视频"
+
+            # 使用自定义的下载文件夹名称
+            folder_name = self.download_folder_name.get(folder_key, describe)
+            if weibo_type == "original":
+                describe = "原创微博" + describe
             else:
-                if weibo_type == "original":
-                    describe = "原创" + describe
-                else:
-                    describe = "转发" + describe
+                describe = "转发微博" + describe
+            
+            logger.info("即将进行%s下载", describe)
             
             # 检查是否有文件需要下载
             has_files = False
@@ -1489,13 +1560,14 @@ class Weibo(object):
                     break
             
             if not has_files:
+                logger.info("没有%s需要下载", describe)
                 return
             
             # 对于 markdown 模式下的 day_by_month，按月份分组下载
             if "markdown" in self.write_mode and self.markdown_split_by == "day_by_month":
                 base_dir = self.get_filepath("markdown")
                 
-                for w in tqdm(self.weibo[wrote_count:], desc=describe):
+                for w in tqdm(self.weibo[wrote_count:], desc="Download progress"):
                     # 对于转发微博，使用父微博的日期确定月份文件夹
                     # 这样转发的内容会与父微博保存在同一个月份目录中
                     parent_created_at = w.get("created_at", "")
@@ -1519,20 +1591,22 @@ class Weibo(object):
                     
                     # 创建月份子目录下的文件目录（使用父微博的月份）
                     month_dir = os.path.join(base_dir, month_folder)
-                    file_dir = os.path.join(month_dir, describe)
+                    file_dir = os.path.join(month_dir, folder_name)
                     if not os.path.isdir(file_dir):
                         os.makedirs(file_dir)
                     
                     self.handle_download(file_type, file_dir, weibo_data.get(key), weibo_data)
+                
+                logger.info("%s下载完毕", describe)
             else:
                 # 原有逻辑：所有文件放在同一目录
                 file_dir = self.get_filepath(file_type)
-                file_dir = file_dir + os.sep + describe
+                file_dir = file_dir + os.sep + folder_name
                 
                 if not os.path.isdir(file_dir):
                     os.makedirs(file_dir)
                 
-                for w in tqdm(self.weibo[wrote_count:], desc=describe):
+                for w in tqdm(self.weibo[wrote_count:], desc="Download progress"):
                     if weibo_type == "retweet":
                         if w.get("retweet"):
                             w = w["retweet"]
@@ -1540,6 +1614,9 @@ class Weibo(object):
                             continue
                     if w.get(key):
                         self.handle_download(file_type, file_dir, w.get(key), w)
+                
+                logger.info("%s下载完毕,保存路径:", describe)
+                logger.info(file_dir)
         except Exception as e:
             logger.exception(e)
 
@@ -1668,11 +1745,12 @@ class Weibo(object):
         weibo["article_url"] = self.get_article_url(selector)
         weibo["pics"] = self.get_pics(weibo_info)
         weibo["video_url"] = self.get_video_url(weibo_info)  # 普通视频URL
-        weibo["live_photo_url"] = self.get_live_photo_url(weibo_info)  # Live Photo视频URL
+        live_photo_data = self.get_live_photo_url(weibo_info)
+        weibo["live_photo_url"] = live_photo_data["url"]  # Live Photo视频URL
+        weibo["live_photo_indices"] = live_photo_data["indices"]  # Live Photo在过滤后pics中的1-based索引
         weibo["links"] = self.get_link_urls(selector)
         weibo["location"] = self.get_location(selector)
         weibo["created_at"] = weibo_info["created_at"]
-        weibo["pic_num"] = weibo_info.get("pic_num", 0)
         weibo["source"] = weibo_info["source"]
         weibo["attitudes_count"] = self.string_to_int(
             weibo_info.get("attitudes_count", 0)
@@ -2185,7 +2263,7 @@ class Weibo(object):
         for w in self.weibo[wrote_count:]:
             wb = OrderedDict()
             for k, v in w.items():
-                if k not in ["user_id", "screen_name", "retweet"]:
+                if k not in ["user_id", "screen_name", "retweet", "live_photo_indices"]:
                     if k == "links":
                         continue
                     if "unicode" in str(type(v)):
@@ -2197,7 +2275,7 @@ class Weibo(object):
                 if w.get("retweet"):
                     wb["is_original"] = False
                     for k2, v2 in w["retweet"].items():
-                        if k2 == "links":
+                        if k2 == "links" or k2 == "live_photo_indices":
                             continue
                         if "unicode" in str(type(v2)):
                             v2 = v2.encode("utf-8")
@@ -2225,7 +2303,7 @@ class Weibo(object):
             if type in ["img", "video", "live_photo"]:
                 file_dir = file_dir + os.sep + type
             elif type == "markdown":
-                # Markdown文件保存在用户目录下，图片在用户目录的img子目录中
+                # Markdown文件保存在用户目录下，图片和视频在用户目录的子目录中
                 file_dir = file_dir
             if not os.path.isdir(file_dir):
                 os.makedirs(file_dir)
@@ -2886,41 +2964,8 @@ class Weibo(object):
 
         if create == True:
             self.create_sqlite_table(connection=con)
-        else:
-            # 检查并更新表结构，添加缺失的字段
-            self.update_sqlite_table(connection=con)
 
         return con
-    
-    def update_sqlite_table(self, connection: sqlite3.Connection):
-        """更新SQLite表结构，添加缺失的字段"""
-        cur = connection.cursor()
-        
-        # 检查user表是否有ip_location字段
-        cur.execute("PRAGMA table_info(user)")
-        columns = [column[1] for column in cur.fetchall()]
-        
-        if "ip_location" not in columns:
-            # 添加ip_location字段
-            cur.execute("ALTER TABLE user ADD COLUMN ip_location varchar(32)")
-            connection.commit()
-            logger.info("已为user表添加ip_location字段")
-        
-        # 检查weibo表是否有edited和edit_count字段
-        cur.execute("PRAGMA table_info(weibo)")
-        weibo_columns = [column[1] for column in cur.fetchall()]
-        
-        if "edited" not in weibo_columns:
-            # 添加edited字段
-            cur.execute("ALTER TABLE weibo ADD COLUMN edited BOOLEAN DEFAULT 0")
-            connection.commit()
-            logger.info("已为weibo表添加edited字段")
-        
-        if "edit_count" not in weibo_columns:
-            # 添加edit_count字段
-            cur.execute("ALTER TABLE weibo ADD COLUMN edit_count INT DEFAULT 0")
-            connection.commit()
-            logger.info("已为weibo表添加edit_count字段")
 
     def create_sqlite_table(self, connection: sqlite3.Connection):
         sql = self.get_sqlite_create_sql()
@@ -3086,7 +3131,100 @@ class Weibo(object):
                 logger.warning(f"无法解析微博日期: {created_at}")
                 continue
 
+        # 每个分组内按 markdown_sort_order 排序
+        descending = self.markdown_sort_order != "old_to_new"
+        for key in weibo_by_group:
+            weibo_by_group[key].sort(key=lambda w: int(w.get("id", 0)), reverse=descending)
+
         return weibo_by_group
+
+    def generate_missing_weibo_report(self):
+        """生成缺失微博报告
+
+        比较本次爬取到的微博ID与markdown文件中已有的微博ID，
+        列出在md中存在但本次未爬取到的微博（可能已被删除或漏爬）。
+        报告按user_id区分，以结束爬取时间为suffix命名。
+        """
+        if not self.missing_weibo_report:
+            return
+
+        # 确保self.user已初始化
+        if not self.user or not self.user_config:
+            return
+
+        # 收集本次爬取到的微博ID（直接从self.weibo中获取）
+        crawled_ids = set()
+        for w in self.weibo:
+            weibo_id = w.get("id")
+            if weibo_id:
+                crawled_ids.add(int(weibo_id))
+
+        if not crawled_ids:
+            return
+
+        # 收集所有md文件中已有的微博ID
+        file_dir = self.get_filepath("markdown")
+        existing_ids = set()
+        try:
+            md_files = self._find_md_files(file_dir)
+            for md_path in md_files:
+                with open(md_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    ids = re.findall(r"<!-- weibo_id: (\d+) -->", content)
+                    existing_ids.update(int(i) for i in ids)
+        except Exception as e:
+            logger.warning(f"读取md文件收集已有微博ID失败: {e}")
+            return
+
+        # 找出缺失的微博（md中有但本次没爬到）
+        missing_ids = existing_ids - crawled_ids
+        if not missing_ids:
+            logger.info("本次爬取无缺失微博，所有已有微博均已再次爬取到")
+            return
+
+        # 构建输出目录和文件路径
+        base_dir = os.path.split(os.path.realpath(__file__))[0] + os.sep + self.output_directory
+        user_screen_name = self.user.get("screen_name", self.user_config.get("user_id", "unknown"))
+        user_id = self.user_config.get("user_id", "unknown")
+        end_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_filename = f"missing_weibo_{user_id}_{user_screen_name}_{end_time}.txt"
+        report_path = os.path.join(base_dir, report_filename)
+
+        try:
+            if not os.path.isdir(base_dir):
+                os.makedirs(base_dir)
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(f"缺失微博报告\n")
+                f.write(f"用户: {user_screen_name} (ID: {user_id})\n")
+                f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"md中已有微博数: {len(existing_ids)}\n")
+                f.write(f"本次爬取到微博数: {len(crawled_ids)}\n")
+                f.write(f"缺失（已删除/未爬到）微博数: {len(missing_ids)}\n")
+                f.write("=" * 60 + "\n")
+                f.write("以下微博ID在md文件中存在，但本次未爬取到（可能已被删除）：\n\n")
+                for mid in sorted(missing_ids, reverse=True):
+                    f.write(f"  https://m.weibo.cn/detail/{mid}\n")
+                f.write("\n")
+                f.write("=" * 60 + "\n")
+                f.write(f"报告完毕。\n")
+            logger.info(
+                f"缺失微博报告已生成: {report_path} "
+                f"({user_screen_name}: {len(missing_ids)} 条缺失)"
+            )
+        except Exception as e:
+            logger.error(f"生成缺失微博报告失败: {e}")
+
+    @staticmethod
+    def _find_md_files(dir_path):
+        """递归查找目录下所有 .md 文件"""
+        md_files = []
+        if not os.path.isdir(dir_path):
+            return md_files
+        for root, dirs, files in os.walk(dir_path):
+            for f in files:
+                if f.endswith('.md'):
+                    md_files.append(os.path.join(root, f))
+        return md_files
 
     def download_markdown_images(self, wrote_count):
         """为Markdown格式下载图片，使用指定的命名规则"""
@@ -3096,6 +3234,7 @@ class Weibo(object):
         # 对于 day_by_month 模式，按月分组图片
         if self.markdown_split_by == "day_by_month":
             # 按月分组微博，然后为每个月创建img目录
+            img_folder_name = self.markdown_file_dir.get("original_image_dir", "img")
             for w in self.weibo[wrote_count:]:
                 created_at = w.get("created_at", "")
                 if not created_at:
@@ -3105,9 +3244,9 @@ class Weibo(object):
                     month_folder = time_obj.strftime("%Y-%m")
                 except ValueError:
                     continue
-                
+
                 month_dir = os.path.join(file_dir, month_folder)
-                img_dir = os.path.join(month_dir, "img")
+                img_dir = os.path.join(month_dir, img_folder_name)
                 if not os.path.isdir(img_dir):
                     os.makedirs(img_dir)
                 
@@ -3116,14 +3255,15 @@ class Weibo(object):
                     self._download_weibo_images(w, img_dir, is_retweet=False)
 
                 # 处理转发微博图片（使用父微博的月份文件夹）
-                if not self.only_crawl_original and w.get("retweet"):
+                if not self.only_crawl_original and self.retweet_pic_download and w.get("retweet"):
                     retweet = w["retweet"]
                     if retweet.get("pics"):
                         # 转发微博的图片保存到父微博的月份文件夹中
                         self._download_weibo_images(retweet, img_dir, is_retweet=True)
         else:
             # 其他模式：所有图片放在同一个 img 目录
-            img_dir = os.path.join(file_dir, "img")
+            img_folder_name = self.markdown_file_dir.get("original_image_dir", "img")
+            img_dir = os.path.join(file_dir, img_folder_name)
             if not os.path.isdir(img_dir):
                 os.makedirs(img_dir)
 
@@ -3134,13 +3274,13 @@ class Weibo(object):
                     self._download_weibo_images(w, img_dir, is_retweet=False)
 
                 # 处理转发微博图片
-                if not self.only_crawl_original and w.get("retweet"):
+                if not self.only_crawl_original and self.retweet_pic_download and w.get("retweet"):
                     retweet = w["retweet"]
                     if retweet.get("pics"):
                         self._download_weibo_images(retweet, img_dir, is_retweet=True)
 
     def _download_weibo_images(self, weibo, img_dir, is_retweet=False):
-        """下载单条微博的图片和Live Photo"""
+        """下载单条微博的图片"""
         created_at = weibo.get("created_at", "")
         if not created_at:
             return
@@ -3153,19 +3293,12 @@ class Weibo(object):
             return
 
         pics = weibo["pics"].split(",")
-        valid_pics = [p for p in pics if p and not p.startswith("https://zzx.sinaimg.cn")]
-        user = weibo.get("screen_name", "")
-        logger.info(f"→ {user} ({weibo['id']}, {date_str} {time_str}) | 图片: {len(valid_pics)} 张")
         for i, pic_url in enumerate(pics):
             if not pic_url:
                 continue
 
             # 生成图片文件名：YYYY-MM-DD_HH-MM-SS.jpg
             # 如果同一条微博有多张图片，在文件名后加 _1, _2 等后缀
-            if pic_url.startswith("https://zzx.sinaimg.cn"):
-                logger.debug(f"跳过下载zzx.sinaimg.cn图片: {pic_url}")
-                continue
-
             base_filename = f"{date_str}_{time_str.replace(':', '-')}"
             if len(pics) > 1:
                 img_filename = f"{base_filename}_{i+1}.jpg"
@@ -3175,7 +3308,6 @@ class Weibo(object):
             img_path = os.path.join(img_dir, img_filename)
 
             # 下载图片
-            logger.info(f"  {img_filename}")
             self.download_one_file(pic_url, img_path, "img", weibo["id"], created_at)
 
     def get_markdown_image_filenames(self, weibo, fallback_created_at=""):
@@ -3215,9 +3347,16 @@ class Weibo(object):
             replacement = line
 
             if stripped == "网页链接" and remaining_links:
-                replacement = f"[网页链接]({remaining_links.pop(0)})"
+                if self.markdown_preview.get("link_preview", 0):
+                    replacement = f"![网页链接]({remaining_links.pop(0)})"
+                else:
+                    replacement = f"[网页链接]({remaining_links.pop(0)})"
             elif stripped == "查看图片" and remaining_images:
-                replacement = f"![{stripped}](img/{remaining_images.pop(0)})"
+                original_img_dir = self.markdown_file_dir.get("original_image_dir", "img")
+                if self.markdown_preview.get("inline_image_preview", 1):
+                    replacement = f"![{stripped}]({original_img_dir}/{remaining_images.pop(0)})"
+                else:
+                    replacement = f"[{stripped}]({original_img_dir}/{remaining_images.pop(0)})"
 
             rendered_lines.append(replacement)
 
@@ -3244,6 +3383,72 @@ class Weibo(object):
             quoted_lines.append(">" if not line else f"> {line}")
 
         return "\n".join(quoted_lines)
+
+    def _render_media_items(self, image_filenames, live_photo_files,
+                            live_photo_prefix, live_photo_label_prefix,
+                            image_dir_name, blockquote=False,
+                            image_preview=True, live_photo_preview=False):
+        """根据 markdown_image_order 配置渲染图片和 Live Photo 的 Markdown 内容
+
+        live_photo_first: Live Photo 全部放前面，图片放后面（现有模式）
+        image_first_interleaved: 图片优先，同名 Live Photo 插入到对应图片下方
+
+        image_preview / live_photo_preview: 控制是否使用 ! 语法实现直接预览
+        image_dir_name: 图片文件所在的目录名（如 "img"）
+        """
+        quote = "> " if blockquote else ""
+
+        def _img_link(filename):
+            if image_preview:
+                return f"{quote}![img]({image_dir_name}/{filename})\n"
+            else:
+                return f"{quote}[img]({image_dir_name}/{filename})\n"
+
+        def _lp_link(label, filename):
+            if live_photo_preview:
+                return f"{quote}![{label}]({live_photo_prefix}{filename})\n"
+            else:
+                return f"{quote}[{label}]({live_photo_prefix}{filename})\n"
+
+        lines = []
+
+        if self.markdown_image_order == "image_first_interleaved":
+            # 构建 Live Photo stem → (label, filename) 映射
+            # stem 如 2026-07-01_22-00-00_1.mov → 2026-07-01_22-00-00_1
+            lp_map = {}
+            for i, file_name in enumerate(live_photo_files):
+                stem = os.path.splitext(file_name)[0]
+                label = (live_photo_label_prefix if len(live_photo_files) == 1
+                         else f"{live_photo_label_prefix} {i + 1}")
+                lp_map[stem] = (label, file_name)
+
+            # 先输出图片，每张图片后紧跟同名 Live Photo
+            remaining_lp_stems = set(lp_map.keys())
+            for img_filename in image_filenames:
+                lines.append(_img_link(img_filename))
+                img_stem = os.path.splitext(img_filename)[0]
+                if img_stem in lp_map:
+                    label, lp_filename = lp_map[img_stem]
+                    # Live Photo 紧跟同名图片，不加空行
+                    lines.append(_lp_link(label, lp_filename))
+                    remaining_lp_stems.discard(img_stem)
+                # 每条图片（及其可能跟随的 Live Photo）之后加一个空行
+                lines.append("\n")
+
+            # 输出未能匹配到任何图片的 Live Photo（异常情况兜底）
+            for stem in remaining_lp_stems:
+                label, lp_filename = lp_map[stem]
+                lines.append(_lp_link(label, lp_filename) + "\n")
+        else:
+            # live_photo_first: Live Photo 全部在前，图片在后（现有默认模式）
+            for i, file_name in enumerate(live_photo_files):
+                label = (live_photo_label_prefix if len(live_photo_files) == 1
+                         else f"{live_photo_label_prefix} {i + 1}")
+                lines.append(_lp_link(label, file_name) + "\n")
+            for img_filename in image_filenames:
+                lines.append(_img_link(img_filename) + "\n")
+
+        return "".join(lines)
 
     def generate_markdown_file(self, group_key, weibo_list):
         """生成单个markdown文件（增量模式）"""
@@ -3299,6 +3504,10 @@ class Weibo(object):
             logger.info(f"分组 {group_key} 没有新微博需要写入")
             return
 
+        # 按 markdown_sort_order 排序
+        descending = self.markdown_sort_order != "old_to_new"
+        new_weibo_list.sort(key=lambda w: int(w.get("id", 0)), reverse=descending)
+
         # 构建新微博的markdown内容
         new_md_content = ""
         for w in new_weibo_list:
@@ -3329,6 +3538,12 @@ class Weibo(object):
 
             # 处理转发微博
             if not self.only_crawl_original and w.get("retweet"):
+                original_img_dir = self.markdown_file_dir.get("original_image_dir", "img")
+                original_video_dir = self.markdown_file_dir.get("original_video_dir", "原创微博视频")
+                original_lp_dir = self.markdown_file_dir.get("original_live_photo_dir", "原创微博Live Photo视频")
+                retweet_img_dir = self.markdown_file_dir.get("retweet_image_dir", "img")
+                retweet_video_dir = self.markdown_file_dir.get("retweet_video_dir", "转发微博视频")
+                retweet_lp_dir = self.markdown_file_dir.get("retweet_live_photo_dir", "转发微博Live Photo视频")
                 # 原创部分
                 text = w.get("text", "").strip()
                 links = w.get("links") or []
@@ -3341,24 +3556,37 @@ class Weibo(object):
                     new_md_content += f"{rendered_text}\n\n"
 
                 for link in remaining_links:
-                    new_md_content += f"[网页链接]({link})\n\n"
+                    if self.markdown_preview.get("link_preview", 0):
+                        new_md_content += f"![网页链接]({link})\n\n"
+                    else:
+                        new_md_content += f"[网页链接]({link})\n\n"
 
+                video_preview = self.markdown_preview.get("original_video_preview", 0)
                 video_files = self.get_download_file_names(
                     "video", w.get("video_url", ""), w
                 )
                 for idx, file_name in enumerate(video_files, start=1):
                     label = "视频" if len(video_files) == 1 else f"视频 {idx}"
-                    new_md_content += f"[{label}](原创微博视频/{file_name})\n\n"
+                    if video_preview:
+                        new_md_content += f"![{label}]({original_video_dir}/{file_name})\n\n"
+                    else:
+                        new_md_content += f"[{label}]({original_video_dir}/{file_name})\n\n"
 
+                original_lp_dir_ref = self.markdown_file_dir.get("original_live_photo_dir", "原创微博Live Photo视频")
+                live_photo_prefix = original_lp_dir_ref + "/"
+                live_photo_preview = self.markdown_preview.get("original_live_photo_preview", 0)
                 live_photo_files = self.get_download_file_names(
                     "live_photo", w.get("live_photo_url", ""), w
                 )
-                for idx, file_name in enumerate(live_photo_files, start=1):
-                    label = "Live Photo" if len(live_photo_files) == 1 else f"Live Photo {idx}"
-                    new_md_content += f"[{label}](原创微博Live Photo视频/{file_name})\n\n"
-
-                for image_filename in remaining_images:
-                    new_md_content += f"![img](img/{image_filename})\n\n"
+                image_preview = self.markdown_preview.get("original_image_preview", 1)
+                new_md_content += self._render_media_items(
+                    remaining_images, live_photo_files,
+                    live_photo_prefix, "Live Photo",
+                    original_img_dir,
+                    blockquote=False,
+                    image_preview=image_preview,
+                    live_photo_preview=live_photo_preview,
+                )
 
                 # 转发部分
                 retweet = w["retweet"]
@@ -3378,26 +3606,42 @@ class Weibo(object):
                     new_md_content += f"{quoted_retweet}\n\n"
 
                 for link in remaining_retweet_links:
-                    new_md_content += f"> [网页链接]({link})\n\n"
+                    if self.markdown_preview.get("link_preview", 0):
+                        new_md_content += f"> ![网页链接]({link})\n\n"
+                    else:
+                        new_md_content += f"> [网页链接]({link})\n\n"
 
+                retweet_video_preview = self.markdown_preview.get("retweet_video_preview", 0)
                 retweet_video_files = self.get_download_file_names(
                     "video", retweet.get("video_url", ""), retweet
                 )
                 for idx, file_name in enumerate(retweet_video_files, start=1):
                     label = "转发视频" if len(retweet_video_files) == 1 else f"转发视频 {idx}"
-                    new_md_content += f"> [{label}](转发微博视频/{file_name})\n\n"
+                    if retweet_video_preview:
+                        new_md_content += f"> ![{label}]({retweet_video_dir}/{file_name})\n\n"
+                    else:
+                        new_md_content += f"> [{label}]({retweet_video_dir}/{file_name})\n\n"
 
+                retweet_lp_dir_ref = self.markdown_file_dir.get("retweet_live_photo_dir", "转发微博Live Photo视频")
+                retweet_live_photo_prefix = retweet_lp_dir_ref + "/"
+                retweet_live_photo_preview = self.markdown_preview.get("retweet_live_photo_preview", 0)
                 retweet_live_photo_files = self.get_download_file_names(
                     "live_photo", retweet.get("live_photo_url", ""), retweet
                 )
-                for idx, file_name in enumerate(retweet_live_photo_files, start=1):
-                    label = "转发Live Photo" if len(retweet_live_photo_files) == 1 else f"转发Live Photo {idx}"
-                    new_md_content += f"> [{label}](转发微博Live Photo视频/{file_name})\n\n"
-
-                for image_filename in remaining_retweet_images:
-                    new_md_content += f"> ![img](img/{image_filename})\n\n"
+                retweet_image_preview = self.markdown_preview.get("retweet_image_preview", 1)
+                new_md_content += self._render_media_items(
+                    remaining_retweet_images, retweet_live_photo_files,
+                    retweet_live_photo_prefix, "转发Live Photo",
+                    retweet_img_dir,
+                    blockquote=True,
+                    image_preview=retweet_image_preview,
+                    live_photo_preview=retweet_live_photo_preview,
+                )
             else:
                 # 原创微博
+                original_img_dir = self.markdown_file_dir.get("original_image_dir", "img")
+                original_video_dir = self.markdown_file_dir.get("original_video_dir", "原创微博视频")
+                original_lp_dir = self.markdown_file_dir.get("original_live_photo_dir", "原创微博Live Photo视频")
                 text = w.get("text", "").strip()
                 links = w.get("links") or []
                 image_filenames = self.get_markdown_image_filenames(w, created_at)
@@ -3409,24 +3653,37 @@ class Weibo(object):
                     new_md_content += f"{rendered_text}\n\n"
 
                 for link in remaining_links:
-                    new_md_content += f"[网页链接]({link})\n\n"
+                    if self.markdown_preview.get("link_preview", 0):
+                        new_md_content += f"![网页链接]({link})\n\n"
+                    else:
+                        new_md_content += f"[网页链接]({link})\n\n"
 
+                video_preview = self.markdown_preview.get("original_video_preview", 0)
                 video_files = self.get_download_file_names(
                     "video", w.get("video_url", ""), w
                 )
                 for idx, file_name in enumerate(video_files, start=1):
                     label = "视频" if len(video_files) == 1 else f"视频 {idx}"
-                    new_md_content += f"[{label}](原创微博视频/{file_name})\n\n"
+                    if video_preview:
+                        new_md_content += f"![{label}]({original_video_dir}/{file_name})\n\n"
+                    else:
+                        new_md_content += f"[{label}]({original_video_dir}/{file_name})\n\n"
 
+                original_lp_dir_ref = self.markdown_file_dir.get("original_live_photo_dir", "原创微博Live Photo视频")
+                live_photo_prefix = original_lp_dir_ref + "/"
+                live_photo_preview = self.markdown_preview.get("original_live_photo_preview", 0)
                 live_photo_files = self.get_download_file_names(
                     "live_photo", w.get("live_photo_url", ""), w
                 )
-                for idx, file_name in enumerate(live_photo_files, start=1):
-                    label = "Live Photo" if len(live_photo_files) == 1 else f"Live Photo {idx}"
-                    new_md_content += f"[{label}](原创微博Live Photo视频/{file_name})\n\n"
-
-                for image_filename in remaining_images:
-                    new_md_content += f"![img](img/{image_filename})\n\n"
+                image_preview = self.markdown_preview.get("original_image_preview", 1)
+                new_md_content += self._render_media_items(
+                    remaining_images, live_photo_files,
+                    live_photo_prefix, "Live Photo",
+                    original_img_dir,
+                    blockquote=False,
+                    image_preview=image_preview,
+                    live_photo_preview=live_photo_preview,
+                )
 
             # 添加分隔线
             new_md_content += "---\n\n"
@@ -3480,90 +3737,6 @@ class Weibo(object):
                     self.download_files("video", "retweet", wrote_count)
                 if self.retweet_live_photo_download:
                     self.download_files("live_photo", "retweet", wrote_count)
-
-        self._verify_downloads(wrote_count)
-
-    def _verify_downloads(self, wrote_count: int) -> None:
-        """验证下载完整性，报告缺失或失败的微博"""
-        weibo_list = self.weibo[wrote_count:]
-        if not weibo_list:
-            return
-
-        incomplete = []
-        failed_ids = set()
-
-        # 1. 检查 not_downloaded.txt
-        for media_type in ("img", "video", "live_photo"):
-            nd_path = self.get_filepath(media_type) + os.sep + "not_downloaded.txt"
-            if os.path.isfile(nd_path):
-                with open(nd_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        parts = line.split(":")
-                        if parts:
-                            try:
-                                wid = int(parts[0])
-                                failed_ids.add(wid)
-                            except ValueError:
-                                pass
-
-        # 2. 逐条微博核对 pic_num vs 实际提取数
-        for w in weibo_list:
-            wid = w.get("id", "")
-            pic_num = w.get("pic_num", 0)
-            if not pic_num:
-                continue
-
-            pic_count = len([u for u in w.get("pics", "").split(",") if u])
-            video_count = len([u for u in w.get("video_url", "").split(";") if u])
-            lp_count = len([u for u in w.get("live_photo_url", "").split(";") if u])
-            actual_total = pic_count + video_count + lp_count
-
-            if actual_total < pic_num:
-                incomplete.append((wid, pic_num, pic_count, video_count, lp_count, actual_total))
-
-        # 3. 输出报告
-        if incomplete or failed_ids:
-            logger.warning("=" * 60)
-            logger.warning("下载完整性检查报告")
-            logger.warning("=" * 60)
-
-            for wid, pic_num, pc, vc, lpc, actual in incomplete:
-                gap = pic_num - actual
-                logger.warning(
-                    f"  ⚠️  微博 ID={wid}: API 声明 {pic_num} 项, "
-                    f"实际提取到 {pc} 图 + {vc} 视频 + {lpc} Live Photo = {actual} 项 "
-                    f"(相差 {gap} 项)"
-                )
-
-            if failed_ids:
-                logger.warning(f"  ❌  以下微博有文件下载失败，详情见 not_downloaded.txt:")
-                for fid in sorted(failed_ids):
-                    logger.warning(f"     微博 ID={fid}")
-                    url = f"https://m.weibo.cn/detail/{fid}"
-                    logger.warning(f"     https://m.weibo.cn/detail/{fid}")
-
-            logger.warning("=" * 60)
-
-        # 4. 同时写入 download_report.txt
-        if incomplete or failed_ids:
-            report_path = os.path.join(self.get_filepath("markdown"), "download_report.txt")
-            mode = "a" if os.path.isfile(report_path) else "w"
-            with open(report_path, mode, encoding="utf-8") as f:
-                f.write(f"\n--- {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-                for wid, pic_num, pc, vc, lpc, actual in incomplete:
-                    gap = pic_num - actual
-                    f.write(
-                        f"⚠️  微博 ID={wid}: API 声明 {pic_num} 项, "
-                        f"实际提取到 {pc} 图 + {vc} 视频 + {lpc} Live Photo = {actual} 项 "
-                        f"(相差 {gap} 项)\n"
-                    )
-                    f.write(f"    https://m.weibo.cn/detail/{wid}\n")
-                for fid in sorted(failed_ids):
-                    f.write(f"❌  微博 ID={fid} 有文件下载失败\n")
-                    f.write(f"    https://m.weibo.cn/detail/{fid}\n")
 
     def get_pages(self):
         """获取全部微博"""
@@ -3623,7 +3796,7 @@ class Weibo(object):
                     if self.anti_ban_enabled:
                         self.check_batch_delay()
 
-                    if page % 10 == 0:  # 每爬10页写入一次文件
+                    if page % 20 == 0:  # 每爬20页写入一次文件
                         self.write_data(wrote_count)
                         wrote_count = self.got_count
 
@@ -3704,63 +3877,6 @@ class Weibo(object):
         self.got_count = 0
         self.weibo_id_list = []
 
-    def execute_stored_video_downloads(self):
-        """执行所有暂存的视频下载命令"""
-        cmd_file_path = os.path.join(self.get_filepath("video"), "yt-dlp_commands.txt")
-        
-        if not os.path.exists(cmd_file_path):
-            logger.info("没有暂存的视频下载命令")
-            return
-        
-        try:
-            logger.info("开始执行所有暂存的视频下载命令...")
-            
-            import subprocess
-            import shlex
-            
-            with open(cmd_file_path, "r", encoding="utf-8") as f:
-                commands = f.readlines()
-            
-            # 创建一个新的命令文件，用于记录本次执行失败的命令
-            failed_cmd_file_path = os.path.join(self.get_filepath("video"), "failed_yt-dlp_commands.txt")
-            
-            for cmd in tqdm(commands, desc="Video Download Progress"):
-                cmd = cmd.strip()
-                if not cmd:
-                    continue
-                
-                try:
-                    logger.info(f"执行命令: {cmd}")
-                    # 使用shell=True执行复杂命令
-                    subprocess.run(cmd, shell=True, check=True)
-                    logger.info(f"命令执行成功: {cmd}")
-                except subprocess.CalledProcessError as e:
-                    logger.error(f"命令执行失败: {cmd}")
-                    logger.error(f"错误信息: {e}")
-                    # 将失败的命令保存到失败命令文件
-                    with open(failed_cmd_file_path, "a", encoding="utf-8") as f:
-                        f.write(cmd + "\n")
-                except Exception as e:
-                    logger.error(f"执行命令时发生未知错误: {cmd}")
-                    logger.error(f"错误信息: {e}")
-                    # 将失败的命令保存到失败命令文件
-                    with open(failed_cmd_file_path, "a", encoding="utf-8") as f:
-                        f.write(cmd + "\n")
-            
-            logger.info("所有视频下载命令执行完成")
-
-            # 删除命令文件
-            if os.path.exists(cmd_file_path):
-                os.remove(cmd_file_path)
-                logger.info(f"已删除命令文件: {cmd_file_path}")
-
-            # 如果有失败的命令，提示用户
-            if os.path.exists(failed_cmd_file_path) and os.path.getsize(failed_cmd_file_path) > 0:
-                logger.warning(f"部分视频下载失败，请查看: {failed_cmd_file_path}")
-            
-        except Exception as e:
-            logger.exception("执行视频下载命令时发生错误")
-    
     def save_cookies_to_file(self):
         """将 Session 中最新的 Cookie 写回文件"""
         if not self.cookie_file_path:
@@ -3797,9 +3913,8 @@ class Weibo(object):
                 # 当前用户所有微博和评论抓取完毕后，再导出该用户的评论 CSV
                 self.export_comments_to_csv_for_current_user()
 
-                # 当前用户处理完后，立即执行该用户的视频下载命令
-                if self.original_video_download or (not self.only_crawl_original and self.retweet_video_download):
-                    self.execute_stored_video_downloads()
+                # 生成缺失微博报告
+                self.generate_missing_weibo_report()
 
                 logger.info("信息抓取完毕")
                 logger.info("*" * 100)
@@ -3817,14 +3932,31 @@ def handle_config_renaming(config, oldName, newName):
         del config[oldName]
 
 def get_config():
-    """获取配置文件信息（支持JSON5格式）"""
-    config_path = os.path.split(os.path.realpath(__file__))[0] + os.sep + "config.json"
+    """获取配置文件信息（支持JSON5格式）
+
+    配置文件优先级：
+    1. config.json（用户已从 config.json.example 复制并重命名）
+    2. config.json.example（版本控制中的默认配置模板）
+    """
+    base_dir = os.path.split(os.path.realpath(__file__))[0] + os.sep
+    config_path = base_dir + "config.json"
+    example_path = base_dir + "config.json.example"
+
+    # 优先使用 config.json，若不存在则使用 config.json.example
     if not os.path.isfile(config_path):
-        logger.warning(
-            "当前路径：%s 不存在配置文件config.json",
-            (os.path.split(os.path.realpath(__file__))[0] + os.sep),
-        )
-        sys.exit()
+        if os.path.isfile(example_path):
+            logger.warning(
+                "未找到 config.json。正在使用 config.json.example（模板配置）。\n"
+                "建议将 config.json.example 复制为 config.json 并填写自己的 Cookie 等配置：\n"
+                "  cp config.json.example config.json"
+            )
+            config_path = example_path
+        else:
+            logger.warning(
+                "当前路径：%s 不存在配置文件 config.json 和 config.json.example",
+                base_dir,
+            )
+            sys.exit()
     try:
         with open(config_path, encoding="utf-8") as f:
             config_content = f.read()
