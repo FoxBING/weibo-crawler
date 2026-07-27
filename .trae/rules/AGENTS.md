@@ -21,6 +21,7 @@ weibo-crawler/
 ├── rename_files.py           # 批量重命名工具（独立脚本）
 ├── test_weibo.py             # 单条微博测试脚本
 ├── download_single_video.py  # 单视频下载工具
+├── download_videos.py        # yt-dlp 批量视频下载脚本（读取 video_links.txt）
 ├── service.py                # 服务化封装
 ├── logging.conf              # 日志配置
 ├── util/
@@ -138,7 +139,7 @@ start()
        │    ├─ 每 10 页 → write_data()
        │    └─ 最终 → write_data()
        ├─ export_comments_to_csv_for_current_user()
-       ├─ execute_stored_video_downloads()   # 执行 yt-dlp 命令
+       ├─ generate_missing_weibo_report()    # 缺失微博报告(upstream)
        └─ update_user_config_file()          # 更新用户配置文件
 ```
 
@@ -197,14 +198,15 @@ start()
 
 ### 视频提取 (`get_video_url`)
 
-1. 遍历 `pics`，提取所有含 `videoSrc` 的条目（不依赖不稳定的 `type="video"` 标记）
+1. 遍历 `pics`，提取所有 `type=video` 且含 `videoSrc` 的条目
 2. 若 `pics` 中未找到视频，回退到 `page_info`：
-   - 优先 `page_url`（`video.weibo.com/show?fid=xxx` 格式，用于 yt-dlp）
-   - 回退 `media_info` 中的直接下载地址（优先级：720p > hd > sd）
+   - 从 `page_info.urls` / `media_info` 取 CDN 直链（优先级：720p > hd > sd）
+
+**注意**：CDN 直链带 `Expires` 签名会过期。pics 空的视频微博通过 `get_video_page_url` 提取 `page_info.page_url`（fid 永久链接），交由 yt-dlp 下载（见"对 upstream 的本地改动"章节）。
 
 ### Live Photo 提取 (`get_live_photo_url`)
 
-直接从 `weibo_info["live_photo"]` 数组获取，分号分隔。
+从 `pics` 数组中提取 `type=livephoto` 条目的 `videoSrc`，并记录其在过滤后 pics 中的位置索引（`live_photo_indices`），使 Live Photo 文件名序号与对应图片一致。
 
 ---
 
@@ -300,27 +302,17 @@ start()
 7. 所有文件修改系统时间（`change_file_time`）
 8. 失败记录到 `not_downloaded.txt`
 
-### yt-dlp 视频下载 (`yd_video_file`)
+### yt-dlp 视频下载（本地扩展）
 
-- `video.weibo.com/show?fid=xxx` 链接不直接下载
-- 命令写入 `yt-dlp_commands.txt`
-- 当前用户处理完后统一执行（`execute_stored_video_downloads`）
+pics 空、只有 `page_info` 的视频微博，其 `page_url`（`video.weibo.com/show?fid=xxx`）被写入 `{output_directory}/video_links.txt`，由独立脚本 `download_videos.py` 调用 yt-dlp 下载。详见"对 upstream 的本地改动"章节。
 
 ### handle_download
 
-三种媒体类型（img/video/live_photo）的统一下载入口。输出格式：
+三种媒体类型（img/video/live_photo）的统一下载入口。
 
-```
-→ {用户名} ({微博ID}, {时间}) | 图片: N 张
-  {文件名1}
-  {文件名2}
-  ...
-→ {用户名} ({微博ID}, {时间}) | 视频: N 个
-  {文件名}
-```
-
-- `video.weibo.com/show` 链接标注为 `(yt-dlp)`，不实际下载
-- 通过 `tqdm.write` 输出，避免与 tqdm 进度条混行
+- 视频支持 `.mov` / `.mp4` 自动识别
+- 多视频下载间有 1-3 秒随机延迟（防 CDN 限流）
+- Live Photo 使用 `live_photo_indices` 使文件名序号与对应图片一致
 
 ### 下载完整性校验 (`_verify_downloads`)
 
@@ -349,6 +341,125 @@ start()
 - `下载完整性检查报告` — 下载完成后的校验结果
 
 每文件级别的 `[DEBUG] save` / `[EXIF]` / `[FILE]` / `[DEBUG] success` 仅在调试时可见（修改 `logging.conf` 恢复 DEBUG）。
+
+---
+
+## 对 upstream 的本地改动（合并参考）
+
+> **基准版本**：`upstream/master` `a3bfe51`（2026-07 合并）
+> **目的**：实现视频分流下载——pics 视频走 upstream 原生直链，pics 空的视频走 yt-dlp（fid 永久链接，避免 CDN 直链过期）
+> **下次合并时**：对照本章检查以下改动点是否与 upstream 冲突
+
+### 改动总览
+
+| # | 文件 | 位置 | 改动类型 | 说明 |
+|---|------|------|----------|------|
+| 1 | weibo.py | `get_video_url` 之后 | 新增方法 | `get_video_page_url` — 提取 fid 永久链接，互斥分流 |
+| 2 | weibo.py | `parse_weibo` 内 | 新增字段+逻辑 | `video_page_url` 字段 + 互斥清空 `video_url` |
+| 3 | weibo.py | `download_files` 之后 | 新增方法 | `write_video_links` — 写入 video_links.txt |
+| 4 | weibo.py | `write_video_links` 内 | 新增方法 | `_resolve_video_link_entry` — 推导与 upstream 一致的路径 |
+| 5 | weibo.py | `write_data` 内 | 新增调用 | 在 `write_markdown` 后调用 `write_video_links` |
+| 6 | download_videos.py | 新文件 | 新增脚本 | yt-dlp 独立下载脚本 |
+
+### weibo.py 改动详解
+
+#### 1. 新增 `get_video_page_url` 方法
+
+**位置**：`get_video_url` 方法之后、`write_exif_time` 之前
+
+**逻辑**：
+```python
+def get_video_page_url(self, weibo_info):
+    # 互斥判断：pics 有视频 → 返回空（交给直链下载）
+    pics = weibo_info.get("pics") or []
+    has_pics_video = any(
+        isinstance(p, dict) and p.get("type") == "video" and p.get("videoSrc")
+        for p in pics
+    )
+    if has_pics_video:
+        return ""
+    # pics 无视频 → 返回 page_info.page_url（交给 yt-dlp）
+    page_info = weibo_info.get("page_info") or {}
+    if page_info.get("type") == "video":
+        return page_info.get("page_url", "")
+    return ""
+```
+
+**合并注意**：若 upstream 改动 `get_video_url` 的视频提取逻辑（如 `type` 判断条件），此处的 `has_pics_video` 判断需同步更新。
+
+#### 2. `parse_weibo` 新增字段 + 互斥清空
+
+**位置**：`weibo["video_url"]` 赋值之后
+
+```python
+weibo["video_url"] = self.get_video_url(weibo_info)
+weibo["video_page_url"] = self.get_video_page_url(weibo_info)
+# 互斥：交给 yt-dlp 的视频清空 video_url，让 upstream 以为没视频直接跳过
+if weibo["video_page_url"]:
+    weibo["video_url"] = ""
+```
+
+**副作用**：交给 yt-dlp 的微博，其 csv/json 输出中 `video_url` 字段为空（`video_page_url` 有值可追溯）。
+
+**合并注意**：若 upstream 在 `parse_weibo` 中新增视频相关字段或逻辑，注意此清空操作的位置。
+
+#### 3-4. 新增 `write_video_links` + `_resolve_video_link_entry`
+
+**位置**：`download_files` 方法之后、`get_location` 之前
+
+**`write_video_links(wrote_count)`**：
+- 遍历 `self.weibo[wrote_count:]`，收集 `video_page_url` 非空的条目（含转发）
+- 写入 `{output_directory}/video_links.txt`，格式：`微博ID | 时间 | 用户 | 类型 | 相对路径 | URL`
+- 按 URL 去重，多次运行不重复写入
+
+**`_resolve_video_link_entry(weibo_data, weibo_type, parent)`**：
+- 推导文件名：复用 `_get_timestamp_prefix`，扩展名看 `video_url` 是否 `.mov`
+- 推导目录：与 `download_files` 一致（区分 `day_by_month` 模式和普通模式）
+- 转发场景用父微博日期确定月份目录
+
+**合并注意**：若 upstream 改动 `handle_download` 的 video 命名规则（前缀/序号/扩展名）或 `download_files` 的目录结构，`_resolve_video_link_entry` 必须同步更新，否则 yt-dlp 下载的位置会与 upstream 不一致。
+
+#### 5. `write_data` 中调用 `write_video_links`
+
+**位置**：`write_markdown` 之后、图片/视频下载之前
+
+```python
+if "markdown" in self.write_mode:
+    self.write_markdown(wrote_count)
+
+# 视频永久链接写入 txt（不受下载开关控制）
+self.write_video_links(wrote_count)
+
+# 图片下载逻辑...
+```
+
+**合并注意**：不受 `original_video_download` 开关控制。若 upstream 改动 `write_data` 结构，确认此调用仍在下载逻辑之前。
+
+### 新增文件 `download_videos.py`
+
+**用途**：读取 `video_links.txt`，用 yt-dlp Python API 下载视频到与 upstream 一致的位置。
+
+**核心特性**：
+- **cookie 自动转换**：weibo.py 的 `key=value` 字符串格式 → yt-dlp 的 Netscape 格式（临时文件，用完即删）
+- **两级回退**：优先游客模式（不消耗登录态），失败回退 cookie 模式
+- **幂等**：已下载文件自动跳过；成功的移入 `.done.txt`，失败的留在原 txt 下次重试
+
+**用法**：
+```bash
+python download_videos.py                                    # 默认读 weibo_data/video_links.txt + cookie.txt
+python download_videos.py --txt 路径.txt --output-dir 目录   # 指定路径
+python download_videos.py --dry-run                          # 只看不下
+```
+
+### 合并冲突高发区域
+
+| upstream 改动位置 | 影响的本地代码 | 风险 |
+|------------------|---------------|------|
+| `get_video_url` | `get_video_page_url` 的 `has_pics_video` 判断 | 视频分流可能失效 |
+| `handle_download` video 分支 | `_resolve_video_link_entry` 路径推导 | yt-dlp 下载位置不一致 |
+| `download_files` 目录逻辑 | `_resolve_video_link_entry` 目录推导 | 同上 |
+| `parse_weibo` 字段赋值 | `video_page_url` 和互斥清空 | 可能遗漏或重复下载 |
+| `write_data` 调用顺序 | `write_video_links` 调用点 | txt 可能不生成 |
 
 ---
 

@@ -1174,6 +1174,36 @@ class Weibo(object):
                         video_urls.append(url)
         return ";".join(video_urls)
 
+    def get_video_page_url(self, weibo_info):
+        """获取视频的永久播放页链接（video.weibo.com/show?fid=xxx）。
+
+        与 get_video_url 返回的 CDN 直链不同：
+        - CDN 直链（pics[].videoSrc / page_info.urls）带签名会过期，无法长期保存
+        - 本方法返回的 page_url 基于 fid，永久有效，适合写入 txt 供 yt-dlp 下载
+
+        互斥分流策略：
+        - 当 pics 中存在 type=video 的条目（多视频微博）时返回空字符串，
+          让 get_video_url 提取的直链由 upstream 的 requests 流程下载；
+        - 仅当 pics 无视频、只有 page_info 时（单视频微博），才返回 page_url，
+          这条微博会被写入 video_links.txt 交由 yt-dlp 下载。
+        这样一条微博的视频要么全部走直链，要么全部走 yt-dlp，避免重复或遗漏。
+        """
+        # 先判断 pics 中是否有视频：有则交给直链下载流程，本方法返回空
+        pics = weibo_info.get("pics") or []
+        has_pics_video = any(
+            isinstance(p, dict) and p.get("type") == "video" and p.get("videoSrc")
+            for p in pics
+        )
+        if has_pics_video:
+            return ""
+
+        page_info = weibo_info.get("page_info") or {}
+        if page_info.get("type") == "video":
+            page_url = page_info.get("page_url", "")
+            if page_url:
+                return page_url
+        return ""
+
     def write_exif_time(self, file_path, time_str):
         if self.write_time_in_exif:
             """写入 JPG EXIF 元数据"""
@@ -1620,6 +1650,113 @@ class Weibo(object):
         except Exception as e:
             logger.exception(e)
 
+    def write_video_links(self, wrote_count):
+        """将视频永久链接写入 output_directory/video_links.txt，供 yt-dlp 独立下载。
+
+        命名规则与 download_files/handle_download 的 video 分支完全一致，
+        因此关闭 original_video_download 等开关后仍会执行，便于用独立脚本
+        读 txt 调用 yt-dlp 下载到与 upstream 相同的位置。
+        """
+        # 收集本次新增微博中所有视频永久链接（原创 + 转发）
+        entries = []
+        for w in self.weibo[wrote_count:]:
+            entry = self._resolve_video_link_entry(w, "original")
+            if entry:
+                entries.append(entry)
+            if not self.only_crawl_original and w.get("retweet"):
+                entry = self._resolve_video_link_entry(w["retweet"], "retweet", parent=w)
+                if entry:
+                    entries.append(entry)
+
+        if not entries:
+            return
+
+        txt_path = (os.path.split(os.path.realpath(__file__))[0]
+                    + os.sep + self.output_directory + os.sep + "video_links.txt")
+        os.makedirs(os.path.dirname(txt_path), exist_ok=True)
+
+        # 读取已有 URL 去重，避免多次运行重复写入
+        existing_urls = set()
+        if os.path.isfile(txt_path):
+            with open(txt_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.rstrip("\n").split(" | ")
+                    if len(parts) >= 6:
+                        existing_urls.add(parts[5])
+
+        new_lines = []
+        for weibo_id, created_at, user_name, type_label, rel_path, url in entries:
+            if url in existing_urls:
+                continue
+            existing_urls.add(url)
+            # 路径统一用正斜杠，方便跨平台脚本处理
+            rel_path = rel_path.replace(os.sep, "/")
+            new_lines.append(
+                f"{weibo_id} | {created_at} | {user_name} | {type_label} | {rel_path} | {url}"
+            )
+
+        if not new_lines:
+            return
+
+        # 首次创建时写入表头
+        write_header = not os.path.isfile(txt_path)
+        with open(txt_path, "a", encoding="utf-8") as f:
+            if write_header:
+                f.write("# video_links.txt - 视频永久链接(供 yt-dlp 下载，命名与 upstream 一致)\n")
+                f.write("# 格式: 微博ID | 发布时间 | 用户名 | 类型 | 目标路径(相对output_directory) | URL\n")
+            for line in new_lines:
+                f.write(line + "\n")
+        logger.info("视频链接已写入 %s(新增 %d 条)", txt_path, len(new_lines))
+
+    def _resolve_video_link_entry(self, weibo_data, weibo_type, parent=None):
+        """推导单条微博的视频永久链接及目标相对路径。
+
+        返回 (weibo_id, created_at, user_name, type_label, rel_path, url) 或 None。
+        rel_path 相对 output_directory，命名规则与 handle_download 的 video 分支一致；
+        parent 为外层父微博(转发场景)，用于 day_by_month 模式下确定月份目录。
+        """
+        url = weibo_data.get("video_page_url", "")
+        if not url:
+            return None
+
+        # 文件名前缀与扩展名判断，与 handle_download 的 video 分支一致
+        prefix = self._get_timestamp_prefix(weibo_data["created_at"])
+        video_url = weibo_data.get("video_url", "")
+        url_list = [u for u in video_url.split(";") if u] if video_url else []
+        first_url = url_list[0] if url_list else ""
+        suffix = ".mov" if first_url.endswith(".mov") else ".mp4"
+        # page_url 对应主视频：多视频时取序号 1，单视频不加序号
+        if len(url_list) > 1:
+            file_name = f"{prefix}_1{suffix}"
+        else:
+            file_name = f"{prefix}{suffix}"
+
+        # 目录推导，与 download_files 保持一致
+        dir_name = self.user["screen_name"]
+        if self.user_id_as_folder_name:
+            dir_name = str(self.user_config["user_id"])
+        folder_key = ("original_video_folder" if weibo_type == "original"
+                      else "retweet_video_folder")
+        folder_name = self.download_folder_name.get(folder_key, "视频")
+
+        if "markdown" in self.write_mode and self.markdown_split_by == "day_by_month":
+            # 月份目录基于父微博日期(转发场景与 download_files 一致)
+            date_src = parent if parent is not None else weibo_data
+            created_at = date_src.get("created_at", "")
+            try:
+                month_folder = datetime.strptime(created_at, DTFORMAT).strftime("%Y-%m")
+                rel_dir = os.path.join(dir_name, month_folder, folder_name)
+            except ValueError:
+                rel_dir = os.path.join(dir_name, folder_name)
+        else:
+            rel_dir = os.path.join(dir_name, "video", folder_name)
+
+        rel_path = os.path.join(rel_dir, file_name)
+        type_label = "原创" if weibo_type == "original" else "转发"
+        user_name = self.user.get("screen_name", "")
+        return (weibo_data.get("id", ""), weibo_data.get("created_at", ""),
+                user_name, type_label, rel_path, url)
+
     def get_location(self, selector):
         """获取微博发布位置"""
         location_icon = "timeline_card_small_location_default.png"
@@ -1745,6 +1882,10 @@ class Weibo(object):
         weibo["article_url"] = self.get_article_url(selector)
         weibo["pics"] = self.get_pics(weibo_info)
         weibo["video_url"] = self.get_video_url(weibo_info)  # 普通视频URL
+        weibo["video_page_url"] = self.get_video_page_url(weibo_info)  # 视频永久播放页链接(供yt-dlp)
+        # 互斥分流：交给 yt-dlp 的视频清空 video_url，让 upstream 以为没视频直接跳过
+        if weibo["video_page_url"]:
+            weibo["video_url"] = ""
         live_photo_data = self.get_live_photo_url(weibo_info)
         weibo["live_photo_url"] = live_photo_data["url"]  # Live Photo视频URL
         weibo["live_photo_indices"] = live_photo_data["indices"]  # Live Photo在过滤后pics中的1-based索引
@@ -3720,6 +3861,9 @@ class Weibo(object):
                 self.weibo_to_sqlite(wrote_count)
             if "markdown" in self.write_mode:
                 self.write_markdown(wrote_count)
+
+            # 视频永久链接写入 txt（不受下载开关控制，便于关闭直链下载后用 yt-dlp 补下）
+            self.write_video_links(wrote_count)
 
             # 图片下载逻辑：如果使用markdown模式，图片已在write_markdown中下载
             # 否则按原有逻辑下载
