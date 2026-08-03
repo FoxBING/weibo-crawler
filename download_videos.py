@@ -118,9 +118,9 @@ def parse_args() -> argparse.Namespace:
         help="只打印将要下载的内容，不实际下载",
     )
     p.add_argument(
-        "--cookies", default="cookie.txt",
-        help="yt-dlp 使用的 cookies 文件路径（默认: cookie.txt，"
-             "weibo.py 的字符串格式会自动转 Netscape）",
+        "--cookies", default="pcwb.txt",
+        help="yt-dlp 使用的 cookies 文件路径（默认: pcwb.txt，"
+             "需提供 weibo.com PC站登录态的 cookie）",
     )
     return p.parse_args()
 
